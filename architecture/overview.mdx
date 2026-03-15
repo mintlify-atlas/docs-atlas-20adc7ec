@@ -1,0 +1,114 @@
+---
+title: "Architecture overview"
+description: "How MinIO stores, protects, and serves data — from a single node to large distributed deployments."
+---
+
+MinIO is designed around a small set of architectural principles: no external metadata database, erasure coding at the object level, and a consistent S3-compatible API surface regardless of deployment topology.
+
+## Deployment topologies
+
+<CardGroup cols={2}>
+  <Card title="Single-node single-drive" icon="hard-drive">
+    Simplest deployment. No erasure coding. Suitable for development and local testing only.
+  </Card>
+  <Card title="Single-node multi-drive" icon="database">
+    Erasure coding across multiple drives on one machine. Tolerates drive failures.
+  </Card>
+  <Card title="Distributed multi-node" icon="network">
+    Multiple nodes each contributing drives. Tolerates both node and drive failures simultaneously.
+  </Card>
+  <Card title="Server pools" icon="server">
+    Multiple independent distributed clusters joined into a single namespace. Scales horizontally without downtime.
+  </Card>
+</CardGroup>
+
+MinIO server automatically switches between standalone and distributed mode based on the command-line arguments passed at startup — no separate configuration file or mode flag is required.
+
+## No external metadata database
+
+MinIO stores all object metadata alongside object data on the drives themselves. There is no separate metadata service, key-value store, or database process to operate. This eliminates an entire class of operational complexity and failure modes:
+
+- No external dependency to keep online
+- No separate backup or replication strategy for metadata
+- Metadata and data move together during healing and rebalancing
+
+## Erasure sets and drive grouping
+
+The fundamental unit of storage in MinIO is an **erasure set** — a group of 2 to 16 drives across which a single object is sharded.
+
+When you start MinIO with a set of drives, it automatically calculates the erasure set size:
+
+- MinIO uses the **largest possible set size** that evenly divides the total number of drives
+- In distributed mode, MinIO also applies **node affinity** to ensure each node contributes an equal number of drives to each set, providing uniform distribution and maximum fault isolation
+- Each object is written to exactly one erasure set
+
+For example:
+
+| Total drives | Erasure set size | Number of sets |
+|-------------|-----------------|----------------|
+| 18          | 9               | 2              |
+| 24          | 12              | 2              |
+| 64          | 16              | 4              |
+| 1024        | 16              | 64             |
+
+## How reads and writes work
+
+### Writes
+
+When MinIO receives a `PutObject` request:
+
+1. The object name is hashed with SipHash to deterministically select an erasure set
+2. The object is sharded into data and parity blocks using Reed-Solomon erasure coding
+3. Each shard is written to a separate drive in the set
+4. A write quorum (`N/2 + 1` drives) must acknowledge before the operation completes
+
+If one or more drives are offline at the start of a write, MinIO automatically increases the parity count for that object to maintain the redundancy SLA.
+
+### Reads
+
+Reads require a **read quorum** — at least half the drives in the erasure set must be available. If fewer than `N/2` drives in a set are offline, MinIO reconstructs the object from the available shards transparently.
+
+### Consistency guarantees
+
+MinIO enforces **read-after-write** and **list-after-write** consistency for all I/O operations in both standalone and distributed modes, provided the underlying filesystem honors POSIX `O_DIRECT`/`fdatasync` semantics.
+
+<Warning>
+  Recommended filesystems: **xfs**, **zfs**, or **btrfs**. Avoid ext4, which does not reliably honor POSIX fsync semantics. Avoid NFS; if NFS is required, use NFSv4.
+</Warning>
+
+## Erasure coding at the object level
+
+Unlike RAID, which operates at the volume level, MinIO performs erasure coding **per object**. This means:
+
+- A single object can be healed without affecting any other object
+- Different objects can use different storage classes (different parity counts) within the same deployment
+- Storage class is set per-object via the `x-amz-storage-class` request header
+
+## BitRot protection
+
+MinIO protects against silent data corruption (bit rot) using [HighwayHash](https://github.com/minio/highwayhash) checksums computed when data is written to disk. Every read verifies these checksums. If corruption is detected, MinIO reconstructs the affected shard from parity and heals the drive.
+
+## Server pools
+
+A MinIO deployment can span multiple **server pools** — independent groups of nodes, each functioning as a self-contained erasure coded cluster. Objects are placed in pools proportionally to available free space. Each pool maintains the same erasure parity SLA as the original pool.
+
+```sh
+minio server http://host{1...4}/export{1...16} http://host{5...12}/export{1...16}
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Erasure coding" icon="shield" href="/architecture/erasure-coding">
+    Reed-Solomon algorithm, parity shards, and healing.
+  </Card>
+  <Card title="Distributed mode" icon="network" href="/architecture/distributed-mode">
+    Multi-node setup, erasure set formation, and pool expansion.
+  </Card>
+  <Card title="Storage classes" icon="layers" href="/architecture/storage-classes">
+    Per-object parity configuration via STANDARD and REDUCED_REDUNDANCY.
+  </Card>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Run a MinIO server and create your first bucket.
+  </Card>
+</CardGroup>

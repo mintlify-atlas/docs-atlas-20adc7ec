@@ -1,0 +1,153 @@
+---
+title: "Request throttling"
+description: "Limit concurrent S3 API requests and configure queue deadlines to protect MinIO under high load."
+---
+
+By default MinIO places no limit on the number of concurrent requests processed at any time. In deployments with high concurrency or spinning-disk (HDD) storage, unbounded concurrency can cause random I/O patterns that degrade throughput and latency.
+
+The API sub-system provides two throttling controls:
+
+- **`requests_max`** — limits the total number of active requests across the cluster
+- **`requests_deadline`** — sets the maximum time a queued request will wait before returning an error
+
+## How throttling works
+
+When `requests_max` is set to a positive value and the number of active requests reaches that limit, new requests are queued. A queued request waits for an active request to complete. If the queue wait exceeds `requests_deadline`, MinIO returns an HTTP 503 (Service Unavailable) to the client.
+
+This converts high-concurrency random I/O into sequential I/O, which is significantly more efficient on spinning disks and helps keep the cluster responsive under load.
+
+<Tip>
+Setting `requests_max=0` (the default) causes MinIO to automatically calculate a request limit based on available RAM. This automatic limit is a reasonable starting point for most deployments.
+</Tip>
+
+## Configure the request limit
+
+<Tabs>
+  <Tab title="Environment variables">
+    Set the limit before starting MinIO:
+
+    ```sh
+    export MINIO_API_REQUESTS_MAX=1600
+    export MINIO_ROOT_USER=your-access-key
+    export MINIO_ROOT_PASSWORD=your-secret-key
+    minio server http://server{1...8}/mnt/hdd{1...16}
+    ```
+  </Tab>
+  <Tab title="mc admin config">
+    Apply the limit at runtime without restarting the server:
+
+    ```sh
+    mc admin config set myminio/ api requests_max=1600
+    mc admin service restart myminio/
+    ```
+
+    <Note>
+    The `api` sub-system is dynamic. The `requests_max` value takes effect immediately after `mc admin config set` — no restart is strictly required. However, a restart ensures all nodes in the cluster pick up the change simultaneously.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Configure the queue deadline
+
+Set the maximum wait time for queued requests:
+
+<Tabs>
+  <Tab title="Environment variable">
+    ```sh
+    export MINIO_API_REQUESTS_DEADLINE=10s
+    ```
+  </Tab>
+  <Tab title="mc admin config">
+    The deadline is not yet exposed as a `requests_deadline` config key; use the environment variable instead.
+  </Tab>
+</Tabs>
+
+Duration values use Go duration syntax: `10s`, `1m`, `2h`.
+
+## Configuration reference
+
+<ParamField path="MINIO_API_REQUESTS_MAX" type="number" default="0">
+  Maximum number of concurrent S3 API requests across the entire cluster. A value of `0` means MinIO automatically sizes the limit based on available RAM.
+
+  Example — limit to 1600 concurrent requests:
+
+  ```sh
+  export MINIO_API_REQUESTS_MAX=1600
+  ```
+
+  Equivalent `mc admin config` key: `requests_max`
+
+  ```sh
+  mc admin config set myminio/ api requests_max=1600
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REQUESTS_DEADLINE" type="duration">
+  Maximum duration a request waits in the queue when the concurrency limit is reached. If a queued request exceeds this deadline, MinIO returns HTTP 503 to the client.
+
+  ```sh
+  export MINIO_API_REQUESTS_DEADLINE=10s
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_CLUSTER_DEADLINE" type="duration" default="10s">
+  Timeout for cluster readiness checks. This is used by health and liveness probes, not for individual S3 requests.
+
+  ```sh
+  export MINIO_API_CLUSTER_DEADLINE=10s
+  ```
+</ParamField>
+
+## Tuning for high-concurrency workloads
+
+### HDD deployments
+
+Spinning disks benefit most from throttling because they are sensitive to random I/O. Start with a limit that reflects the number of drives and their queue depth:
+
+```sh
+# Example: 8 nodes × 16 drives × ~12 IOPS per drive = ~1600 requests
+export MINIO_API_REQUESTS_MAX=1600
+```
+
+Monitor disk utilisation and queue latency. Reduce `requests_max` if average disk wait times increase. Increase it if disks are underutilised and latency is acceptable.
+
+### SSD and NVMe deployments
+
+Modern NVMe drives handle deep queues efficiently. The automatic limit (`requests_max=0`) is generally appropriate. If you observe request pileups under burst load, set an explicit limit as a ceiling:
+
+```sh
+export MINIO_API_REQUESTS_MAX=4096
+```
+
+### Setting a deadline
+
+For interactive workloads where clients should fail fast rather than queue indefinitely:
+
+```sh
+export MINIO_API_REQUESTS_MAX=800
+export MINIO_API_REQUESTS_DEADLINE=5s
+```
+
+For batch workloads where queuing is acceptable, omit the deadline or set it to a longer value:
+
+```sh
+export MINIO_API_REQUESTS_MAX=800
+export MINIO_API_REQUESTS_DEADLINE=60s
+```
+
+## Related API settings
+
+The following settings are part of the same `api` sub-system and can be tuned alongside throttling.
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `MINIO_API_REPLICATION_MAX_WORKERS` | `500` | Maximum replication workers |
+| `MINIO_API_REPLICATION_MAX_LRG_WORKERS` | `10` | Replication workers for objects >=128 MiB |
+| `MINIO_API_TRANSITION_WORKERS` | `100` | ILM transition workers |
+| `MINIO_API_LIST_QUORUM` | `strict` | Quorum required for list operations |
+
+View and update the full API sub-system configuration:
+
+```sh
+mc admin config get myminio/ api
+```

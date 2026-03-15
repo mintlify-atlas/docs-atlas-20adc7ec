@@ -1,0 +1,326 @@
+---
+title: "Security Token Service"
+description: "Issue short-lived S3 credentials using AssumeRole, WebIdentity, LDAP, and certificate-based authentication."
+---
+
+The MinIO Security Token Service (STS) is an endpoint that issues temporary credentials for MinIO resources. Temporary credentials work like root or IAM credentials but carry an expiry time and do not need to be stored in the application.
+
+**Advantages of temporary credentials:**
+
+- Eliminate long-lived secrets embedded in application code.
+- Expire automatically — no rotation or explicit revocation needed.
+- Can be further restricted with an inline session policy.
+
+All STS APIs use version `2011-06-15` (borrowed from AWS for compatibility) and return XML responses that mirror the AWS STS wire format.
+
+## STS endpoints summary
+
+| Action | Identity source |
+|---|---|
+| `AssumeRole` | MinIO IAM user (access key + secret key) |
+| `AssumeRoleWithWebIdentity` | OIDC / OpenID Connect JWT |
+| `AssumeRoleWithLDAPIdentity` | AD / LDAP username + password |
+| `AssumeRoleWithCertificate` | X.509 client TLS certificate |
+| `AssumeRoleWithClientGrants` | OAuth2 client credential grant (JWT access token) |
+
+## Common parameters
+
+All STS actions accept the following optional parameters:
+
+| Parameter | Type | Range | Description |
+|---|---|---|---|
+| `DurationSeconds` | integer | 900 – 31,536,000 | Credential lifetime in seconds. Default is 3,600. |
+| `Policy` | string | 1–2,048 chars | Inline session policy (JSON). Permissions are the **intersection** of this policy and the user's assigned policies. |
+
+<Note>
+An inline session policy can only restrict, never expand, the permissions of the parent credentials.
+</Note>
+
+## AssumeRole
+
+`AssumeRole` exchanges MinIO IAM user credentials (access key + secret key) for temporary credentials.
+
+### Sample request
+
+```
+POST http://minio:9000/?Action=AssumeRole
+  &DurationSeconds=3600
+  &Version=2011-06-15
+  &Policy={"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::*"}]}
+  &AUTHPARAMS
+```
+
+The `AUTHPARAMS` field carries an AWS Signature V4 authorization header.
+
+### Sample response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <AssumedRoleUser>
+      <Arn/>
+      <AssumeRoleId/>
+    </AssumedRoleUser>
+    <Credentials>
+      <AccessKeyId>Y4RJU1RNFGK48LGO9I2S</AccessKeyId>
+      <SecretAccessKey>sYLRKS1Z7hSjluf6gEbb9066hnx315wHTiACPAjg</SecretAccessKey>
+      <Expiration>2019-08-08T20:26:12Z</Expiration>
+      <SessionToken>eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9...</SessionToken>
+    </Credentials>
+  </AssumeRoleResult>
+  <ResponseMetadata>
+    <RequestId>c6104cbe-af31-11e0-8154-cbc7ccf896c7</RequestId>
+  </ResponseMetadata>
+</AssumeRoleResponse>
+```
+
+### Using the AWS CLI
+
+```ini
+# ~/.aws/credentials
+[foobar]
+region = us-east-1
+aws_access_key_id = foobar
+aws_secret_access_key = foo12345
+```
+
+```bash
+aws --profile foobar \
+    --endpoint-url http://localhost:9000 \
+    sts assume-role \
+    --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::*"}]}' \
+    --role-arn arn:xxx:xxx:xxx:xxxx \
+    --role-session-name anything
+```
+
+<Note>
+`--role-arn` and `--role-session-name` are required by the AWS CLI but are not meaningful for MinIO. They can be set to any non-empty value.
+</Note>
+
+## AssumeRoleWithWebIdentity
+
+`AssumeRoleWithWebIdentity` exchanges an OIDC `id_token` JWT for temporary credentials. No MinIO credentials are required in the request.
+
+### Prerequisites
+
+Configure MinIO with an OpenID provider before calling this API:
+
+```bash
+export MINIO_IDENTITY_OPENID_CONFIG_URL=https://accounts.google.com/.well-known/openid-configuration
+export MINIO_IDENTITY_OPENID_CLIENT_ID="843351d4-1080-11ea-aa20-271ecba3924a"
+export MINIO_IDENTITY_OPENID_ROLE_POLICY="readwrite"
+minio server /mnt/data
+```
+
+### Access control
+
+MinIO supports two modes for mapping OIDC users to policies:
+
+1. **Role policy (recommended)**: The policy is set in `MINIO_IDENTITY_OPENID_ROLE_POLICY`. A Role ARN is printed to the server log at startup and must be passed as `RoleArn` in the API call.
+2. **JWT claim**: The `id_token` must contain a claim named `policy` (configurable via `MINIO_IDENTITY_OPENID_CLAIM_NAME`) with one or more policy names. Do **not** include `RoleArn` when using claim mode.
+
+### Key parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `WebIdentityToken` | Yes | The `id_token` JWT from the OIDC provider |
+| `Version` | Yes | Must be `2011-06-15` |
+| `RoleArn` | Conditional | Required when role policy mode is configured |
+| `WebIdentityAccessToken` | No | `access_token` for fetching claims from the UserInfo endpoint |
+| `DurationSeconds` | No | Default 3,600; falls back to token expiry if omitted |
+
+### Sample request
+
+```
+POST http://minio.cluster:9000?Action=AssumeRoleWithWebIdentity
+  &DurationSeconds=3600
+  &WebIdentityToken=<id_token_jwt>
+  &Version=2011-06-15
+```
+
+### Sample response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>Y4RJU1RNFGK48LGO9I2S</AccessKeyId>
+      <SecretAccessKey>sYLRKS1Z7hSjluf6gEbb9066hnx315wHTiACPAjg</SecretAccessKey>
+      <Expiration>2019-08-08T20:26:12Z</Expiration>
+      <SessionToken>eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9...</SessionToken>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+  <ResponseMetadata/>
+</AssumeRoleWithWebIdentityResponse>
+```
+
+## AssumeRoleWithLDAPIdentity
+
+`AssumeRoleWithLDAPIdentity` accepts an AD/LDAP username and password and returns temporary credentials.
+
+### Authentication flow
+
+<Steps>
+  <Step title="User submits credentials">
+    The client sends the LDAP username and password to the STS API.
+  </Step>
+  <Step title="MinIO looks up the user DN">
+    MinIO uses the lookup-bind service account to find the user's Distinguished Name in the LDAP directory.
+  </Step>
+  <Step title="MinIO verifies the credentials">
+    MinIO re-binds to the LDAP server using the user's DN and provided password.
+  </Step>
+  <Step title="Group membership is queried">
+    If group search is configured, MinIO queries the directory for groups the user belongs to.
+  </Step>
+  <Step title="Policies are resolved">
+    MinIO checks for IAM policies attached to the user DN or any of their group DNs.
+  </Step>
+  <Step title="Temporary credentials are returned">
+    MinIO generates and returns an access key, secret key, and session token.
+  </Step>
+</Steps>
+
+### Prerequisites
+
+```bash
+export MINIO_IDENTITY_LDAP_SERVER_ADDR='my.ldap-active-dir-server.com:636'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN='cn=admin,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD=admin
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN='ou=users,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(uid=%s)'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER='(&(objectclass=groupOfNames)(member=%d))'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN='dc=min,dc=io'
+minio server ~/data
+```
+
+### Key parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `LDAPUsername` | Yes | AD/LDAP username (2–2,048 chars) |
+| `LDAPPassword` | Yes | AD/LDAP password (4–2,048 chars) |
+| `Version` | Yes | Must be `2011-06-15` |
+| `DurationSeconds` | No | Default 3,600 |
+
+### Sample request
+
+```
+POST http://minio.cluster:9000?Action=AssumeRoleWithLDAPIdentity
+  &LDAPUsername=foouser
+  &LDAPPassword=foouserpassword
+  &Version=2011-06-15
+  &DurationSeconds=7200
+```
+
+### Sample response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithLDAPIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithLDAPIdentityResult>
+    <Credentials>
+      <AccessKeyId>Y4RJU1RNFGK48LGO9I2S</AccessKeyId>
+      <SecretAccessKey>sYLRKS1Z7hSjluf6gEbb9066hnx315wHTiACPAjg</SecretAccessKey>
+      <Expiration>2019-08-08T20:26:12Z</Expiration>
+      <SessionToken>eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9...</SessionToken>
+    </Credentials>
+  </AssumeRoleWithLDAPIdentityResult>
+  <ResponseMetadata/>
+</AssumeRoleWithLDAPIdentityResponse>
+```
+
+## AssumeRoleWithCertificate
+
+`AssumeRoleWithCertificate` authenticates a client using an X.509 TLS certificate. No additional identity provider is required, which can improve availability compared to LDAP or OIDC.
+
+### Enable certificate-based authentication
+
+```bash
+export MINIO_IDENTITY_TLS_ENABLE=on
+minio server ~/data
+```
+
+The `MINIO_IDENTITY_TLS_SKIP_VERIFY=on` option can be set to trust client certificates without CA verification (not recommended for production).
+
+### Policy mapping
+
+MinIO maps the client certificate to a policy using the certificate's Subject **Common Name (CN)** field. A certificate with `CN = foobar` is associated with the IAM policy named `foobar`.
+
+The certificate must have the Extended Key Usage `TLS Web Client Authentication`.
+
+### Sample request
+
+```bash
+curl -X POST \
+  --key private.key \
+  --cert public.crt \
+  "https://minio:9000?Action=AssumeRoleWithCertificate&Version=2011-06-15&DurationSeconds=3600"
+```
+
+### Sample response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithCertificateResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithCertificateResult>
+    <Credentials>
+      <AccessKeyId>YC12ZBHUVW588BQAE5BM</AccessKeyId>
+      <SecretAccessKey>Zgl9+zdE0pZ88+hLqtfh0ocLN+WQTJixHouCkZkW</SecretAccessKey>
+      <Expiration>2021-07-19T20:10:45Z</Expiration>
+      <SessionToken>eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9...</SessionToken>
+    </Credentials>
+  </AssumeRoleWithCertificateResult>
+  <ResponseMetadata>
+    <RequestId>169339CD8B3A6948</RequestId>
+  </ResponseMetadata>
+</AssumeRoleWithCertificateResponse>
+```
+
+<Note>
+The returned credentials never out-live the client certificate. If `DurationSeconds` is longer than the certificate's remaining validity, MinIO caps the expiry at the certificate's `Not After` date.
+</Note>
+
+## AssumeRoleWithClientGrants
+
+`AssumeRoleWithClientGrants` accepts an OAuth2 `access_token` from an identity provider using the client credentials grant flow. This is suitable for machine-to-machine authentication where no user interaction is possible.
+
+### Sample request
+
+```
+POST http://minio.cluster:9000?Action=AssumeRoleWithClientGrants
+  &DurationSeconds=3600
+  &Token=<oauth2_access_token>
+  &Version=2011-06-15
+```
+
+### Prerequisites
+
+```bash
+export MINIO_IDENTITY_OPENID_CONFIG_URL=http://localhost:8080/auth/realms/demo/.well-known/openid-configuration
+export MINIO_IDENTITY_OPENID_CLIENT_ID="843351d4-1080-11ea-aa20-271ecba3924a"
+minio server /mnt/data
+```
+
+## JWT claims for policy variables
+
+When credentials are issued via `AssumeRoleWithWebIdentity`, IAM policies can reference JWT claims as policy variables using the `jwt:*` prefix:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": ["arn:aws:s3:::mybucket/${jwt:preferred_username}/*"]
+    }
+  ]
+}
+```
+
+Supported `jwt:*` variables include: `sub`, `iss`, `aud`, `jti`, `upn`, `name`, `groups`, `given_name`, `family_name`, `preferred_username`, `email`, `phone_number`, `scope`, and `client_id`.
+
+For LDAP credentials, use `ldap:username`, `ldap:user`, and `ldap:groups`.

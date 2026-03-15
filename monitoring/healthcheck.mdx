@@ -1,0 +1,163 @@
+---
+title: "Health check endpoints"
+description: "MinIO exposes unauthenticated HTTP health endpoints for liveness, readiness, and cluster quorum checks used by Kubernetes and load balancers."
+---
+
+MinIO exposes several unauthenticated HTTP endpoints for health checking. These endpoints are designed for use with Kubernetes probes, load balancer health checks, and maintenance workflows.
+
+## Endpoint reference
+
+| Endpoint | Purpose | Success | Failure |
+|---|---|---|---|
+| `GET /minio/health/live` | Liveness — server process is running | `200 OK` | `503 Service Unavailable` |
+| `GET /minio/health/ready` | Readiness — server is ready to serve requests | `200 OK` | `503 Service Unavailable` |
+| `GET /minio/health/cluster` | Cluster write quorum is available | `200 OK` | `503 Service Unavailable` |
+| `GET /minio/health/cluster/read` | Cluster read quorum is available | `200 OK` | `503 Service Unavailable` |
+| `GET /minio/health/cluster?maintenance=true` | Safe to take this node down for maintenance | `200 OK` | `412 Precondition Failed` |
+
+## Liveness probe (`/minio/health/live`)
+
+The liveness endpoint checks that the MinIO process is alive and not overloaded. It returns `200 OK` as long as:
+
+- The server is running
+- The incoming request queue is within capacity
+
+It does **not** contact external systems (etcd, KMS). This is intentional — a failing liveness check in Kubernetes causes a pod restart, so the check is kept conservative.
+
+```bash
+curl -I http://localhost:9000/minio/health/live
+# HTTP/1.1 200 OK
+```
+
+**Kubernetes liveness probe configuration:**
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /minio/health/live
+    port: 9000
+    scheme: HTTP
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+```
+
+<Note>
+  `initialDelaySeconds: 120` gives MinIO time to initialize its object layer, IAM system, and bucket metadata before the first probe fires.
+</Note>
+
+## Readiness probe (`/minio/health/ready`)
+
+The readiness endpoint checks that MinIO is fully initialized and ready to serve S3 requests. It returns `200 OK` only when:
+
+- The object layer is initialized
+- The bucket metadata system is initialized
+- The IAM system is initialized
+- The request queue is within capacity
+- KMS is reachable (if configured)
+- etcd is reachable (if configured)
+
+When the readiness probe fails, Kubernetes stops routing traffic to the pod but does not restart it.
+
+```bash
+curl -I http://localhost:9000/minio/health/ready
+# HTTP/1.1 200 OK
+```
+
+**Kubernetes readiness probe configuration:**
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /minio/health/ready
+    port: 9000
+    scheme: HTTP
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+```
+
+## Cluster health probes
+
+### Write quorum (`/minio/health/cluster`)
+
+Checks whether the cluster has sufficient drives online to satisfy write quorum. Returns:
+
+- `200 OK` — cluster can accept writes
+- `503 Service Unavailable` — cluster has lost write quorum
+
+The response always includes the `X-Minio-Write-Quorum` header indicating the current required write quorum value.
+
+```bash
+curl -i http://minio1:9001/minio/health/cluster
+```
+
+Example response when write quorum is not met:
+
+```http
+HTTP/1.1 503 Service Unavailable
+X-Minio-Write-Quorum: 3
+Server: MinIO
+Content-Length: 0
+```
+
+### Read quorum (`/minio/health/cluster/read`)
+
+Checks whether the cluster has sufficient drives online to satisfy read quorum. Returns:
+
+- `200 OK` — cluster can serve reads
+- `503 Service Unavailable` — cluster has lost read quorum
+
+The response includes the `X-Minio-Write-Quorum` header.
+
+```bash
+curl -i http://minio1:9001/minio/health/cluster/read
+```
+
+### Maintenance mode check (`/minio/health/cluster?maintenance=true`)
+
+Before taking a node offline for maintenance, query this endpoint on that specific node to verify that removing it will not cause a loss of high availability.
+
+- `200 OK` — it is safe to take this node down
+- `412 Precondition Failed` — taking this node down would cause HA loss
+
+The response includes the `X-Minio-Write-Quorum` header.
+
+```bash
+curl -i http://minio1:9001/minio/health/cluster?maintenance=true
+```
+
+Example response when HA would be lost:
+
+```http
+HTTP/1.1 412 Precondition Failed
+X-Minio-Write-Quorum: 3
+Server: MinIO
+Content-Length: 0
+```
+
+<Warning>
+  Always check the maintenance endpoint before draining a node. If the endpoint returns `412`, do not proceed — your cluster does not have enough drives to maintain quorum after the node goes offline.
+</Warning>
+
+## Response headers
+
+Health check responses include additional diagnostic headers:
+
+| Header | Description |
+|---|---|
+| `X-Minio-Write-Quorum` | Current write quorum required by the cluster |
+| `X-MinIO-Server-Status` | Present when the server is not fully initialized; values include `offline`, `bucket-metadata-offline`, `iam-offline` |
+| `X-MinIO-Healing-Drives` | Number of drives currently undergoing healing (present only when non-zero) |
+
+## Using with load balancers
+
+Point your load balancer's health check at `/minio/health/cluster` to automatically remove nodes that have lost quorum from the backend pool. Use `/minio/health/live` for a simple liveness signal that avoids routing to unresponsive nodes.
+
+<Tip>
+  For single-node deployments, use `/minio/health/live` for both liveness and readiness checks, since the cluster quorum endpoints are primarily meaningful in distributed deployments.
+</Tip>

@@ -1,0 +1,368 @@
+---
+title: "Environment variables"
+description: "Complete reference for all MinIO environment variables grouped by category."
+---
+
+MinIO reads environment variables at startup. Variables set in the environment override the corresponding values stored in the MinIO config sub-system. Variables marked as **required** must be set before the server will start.
+
+<Note>
+You can consolidate all environment variables in a single file by setting `MINIO_CONFIG_ENV_FILE` to the path of that file. Values in this file take precedence over all other environment sources.
+</Note>
+
+## Server
+
+<ParamField path="MINIO_VOLUMES" type="string">
+  Space-separated list of disk paths or distributed URL patterns that define the storage pool. Equivalent to the positional `DIR` arguments passed to `minio server`.
+
+  ```sh
+  export MINIO_VOLUMES="/mnt/data{1...4}"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ADDRESS" type="string" default=":9000">
+  Address and port the MinIO S3 API server binds to. Accepts `HOST:PORT` or `:PORT`.
+
+  ```sh
+  export MINIO_ADDRESS=":9000"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_CONSOLE_ADDRESS" type="string">
+  Address and port for the embedded MinIO Console web UI. If not set, a random port is chosen.
+
+  ```sh
+  export MINIO_CONSOLE_ADDRESS=":9001"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_CONFIG_ENV_FILE" type="path">
+  Path to a file containing environment variable definitions. Overrides all other environment sources.
+
+  ```sh
+  export MINIO_CONFIG_ENV_FILE=/etc/minio/config.env
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ARGS" type="string">
+  Passes server arguments from an environment variable instead of the command line.
+
+  ```sh
+  export MINIO_ARGS="/mnt/data{1...4}"
+  ```
+</ParamField>
+
+## Security (credentials)
+
+<ParamField path="MINIO_ROOT_USER" type="string" required>
+  The root (administrator) access key. Must be between 3 and 20 characters. Replaces the deprecated `MINIO_ACCESS_KEY`.
+
+  ```sh
+  export MINIO_ROOT_USER=minioadmin
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ROOT_PASSWORD" type="string" required>
+  The root (administrator) secret key. Must be at least 8 characters. Replaces the deprecated `MINIO_SECRET_KEY`.
+
+  ```sh
+  export MINIO_ROOT_PASSWORD=minioadmin
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ROOT_USER_FILE" type="path">
+  Path to a file containing the root user value. Useful for Docker secrets.
+</ParamField>
+
+<ParamField path="MINIO_ROOT_PASSWORD_FILE" type="path">
+  Path to a file containing the root password value. Useful for Docker secrets.
+</ParamField>
+
+<ParamField path="MINIO_CERT_PASSWD" type="string">
+  Password for a password-protected private TLS key (`private.key`). Required when the key file is encrypted with AES-256.
+
+  ```sh
+  export MINIO_CERT_PASSWD=mypassword
+  ```
+</ParamField>
+
+## Site identity
+
+<ParamField path="MINIO_SITE_NAME" type="string">
+  Human-readable name for the deployment. Used in logging and the MinIO Console.
+
+  ```sh
+  export MINIO_SITE_NAME="sfo-rack-1"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_SITE_REGION" type="string">
+  AWS-style region name for the deployment. Returned in `GetBucketLocation` responses.
+
+  ```sh
+  export MINIO_SITE_REGION="us-west-1"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_SITE_COMMENT" type="string">
+  Optional free-text comment attached to the site configuration.
+</ParamField>
+
+## Storage class
+
+<ParamField path="MINIO_STORAGE_CLASS_STANDARD" type="string" default="EC:N/2">
+  Parity setting for the default `STANDARD` storage class. Format is `EC:n` where `n` is the number of parity drives. Default parity is half the drives in a set.
+
+  ```sh
+  export MINIO_STORAGE_CLASS_STANDARD="EC:4"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_STORAGE_CLASS_RRS" type="string" default="EC:2">
+  Parity setting for the `REDUCED_REDUNDANCY` storage class. Must be less than the standard parity.
+
+  ```sh
+  export MINIO_STORAGE_CLASS_RRS="EC:2"
+  ```
+</ParamField>
+
+## Compression
+
+<ParamField path="MINIO_COMPRESSION_ENABLE" type="on|off" default="off">
+  Enables or disables server-side streaming compression.
+
+  ```sh
+  export MINIO_COMPRESSION_ENABLE="on"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_EXTENSIONS" type="csv" default=".txt,.log,.csv,.json,.tar,.xml,.bin">
+  Comma-separated list of file extensions to compress. Set to `*` to compress all extensions.
+
+  ```sh
+  export MINIO_COMPRESSION_EXTENSIONS=".txt,.log,.csv,.json,.tar,.xml,.bin"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_MIME_TYPES" type="csv" default="text/*,application/json,application/xml,binary/octet-stream">
+  Comma-separated list of MIME types to compress. Wildcards are supported (e.g., `text/*`). Set to `*` to compress all types.
+
+  ```sh
+  export MINIO_COMPRESSION_MIME_TYPES="text/*,application/json,application/xml"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_ALLOW_ENCRYPTION" type="on|off" default="off">
+  Allows compression of encrypted objects. Disabled by default due to CRIME-class vulnerabilities. Consult a security expert before enabling.
+
+  ```sh
+  export MINIO_COMPRESSION_ALLOW_ENCRYPTION="off"
+  ```
+</ParamField>
+
+## API and request handling
+
+<ParamField path="MINIO_API_REQUESTS_MAX" type="number" default="0">
+  Maximum number of concurrent S3 API requests across the cluster. A value of `0` means MinIO automatically sizes the limit based on available RAM.
+
+  ```sh
+  export MINIO_API_REQUESTS_MAX=1600
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REQUESTS_DEADLINE" type="duration">
+  Maximum duration a request will wait in the queue when `MINIO_API_REQUESTS_MAX` is reached before returning a 503.
+
+  ```sh
+  export MINIO_API_REQUESTS_DEADLINE=10s
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_CLUSTER_DEADLINE" type="duration" default="10s">
+  Timeout for cluster readiness checks performed during health and liveness probes.
+
+  ```sh
+  export MINIO_API_CLUSTER_DEADLINE=10s
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_CORS_ALLOW_ORIGIN" type="csv" default="*">
+  Comma-separated list of origins permitted for CORS requests. Defaults to `*` (all origins).
+
+  ```sh
+  export MINIO_API_CORS_ALLOW_ORIGIN="https://example.com,https://app.example.com"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REMOTE_TRANSPORT_DEADLINE" type="duration" default="2h">
+  Deadline for API requests on remote transports when proxying between federated instances.
+
+  ```sh
+  export MINIO_API_REMOTE_TRANSPORT_DEADLINE=2h
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_LIST_QUORUM" type="string" default="strict">
+  Acceptable quorum for list operations. Valid values: `strict`, `optimal`, `reduced`, `disk`, `auto`.
+
+  ```sh
+  export MINIO_API_LIST_QUORUM=strict
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REPLICATION_PRIORITY" type="string" default="auto">
+  Replication scheduling priority. Valid values: `slow`, `fast`, `auto`.
+
+  ```sh
+  export MINIO_API_REPLICATION_PRIORITY=auto
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REPLICATION_MAX_WORKERS" type="number" default="500">
+  Maximum number of replication workers. Must be between 1 and 500.
+
+  ```sh
+  export MINIO_API_REPLICATION_MAX_WORKERS=500
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_REPLICATION_MAX_LRG_WORKERS" type="number" default="10">
+  Maximum number of replication workers for large objects (>=128 MiB). Must be between 1 and 10 per node.
+
+  ```sh
+  export MINIO_API_REPLICATION_MAX_LRG_WORKERS=10
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_TRANSITION_WORKERS" type="number" default="100">
+  Number of workers for ILM object transition operations.
+
+  ```sh
+  export MINIO_API_TRANSITION_WORKERS=100
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_STALE_UPLOADS_EXPIRY" type="duration" default="24h">
+  Duration after which incomplete multipart uploads are considered stale and eligible for cleanup.
+
+  ```sh
+  export MINIO_API_STALE_UPLOADS_EXPIRY=24h
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL" type="duration" default="6h">
+  Interval between stale multipart upload cleanup sweeps.
+
+  ```sh
+  export MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL=6h
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_DELETE_CLEANUP_INTERVAL" type="duration" default="5m">
+  Interval between sweeps that permanently delete objects from the `.trash` folder.
+
+  ```sh
+  export MINIO_API_DELETE_CLEANUP_INTERVAL=5m
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_ODIRECT" type="on|off" default="on">
+  Enables or disables `O_DIRECT` for disk writes under specific conditions. Do not disable without prior testing.
+
+  ```sh
+  export MINIO_API_ODIRECT=on
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_ROOT_ACCESS" type="on|off" default="on">
+  Controls whether the root credential has access to all S3 and admin API calls. Set to `off` to restrict root access.
+
+  ```sh
+  export MINIO_API_ROOT_ACCESS=on
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_SYNC_EVENTS" type="on|off" default="off">
+  Enables synchronous bucket notifications. When `on`, object operations block until the notification is delivered.
+
+  ```sh
+  export MINIO_API_SYNC_EVENTS=off
+  ```
+</ParamField>
+
+<ParamField path="MINIO_API_OBJECT_MAX_VERSIONS" type="number" default="9223372036854775807">
+  Maximum number of versions allowed per object. Defaults to `math.MaxInt64`.
+
+  ```sh
+  export MINIO_API_OBJECT_MAX_VERSIONS=1000
+  ```
+</ParamField>
+
+## Browser and console
+
+<ParamField path="MINIO_BROWSER" type="on|off" default="on">
+  Enables or disables the embedded MinIO Console web UI.
+
+  ```sh
+  export MINIO_BROWSER=on
+  ```
+</ParamField>
+
+<ParamField path="MINIO_BROWSER_REDIRECT_URL" type="url">
+  Custom redirect URL for the MinIO Console. Useful when MinIO is behind a reverse proxy.
+
+  ```sh
+  export MINIO_BROWSER_REDIRECT_URL=https://console.example.com
+  ```
+</ParamField>
+
+<ParamField path="MINIO_SERVER_URL" type="url">
+  Public URL of the MinIO S3 API endpoint. Used by the Console to generate correct presigned URLs.
+
+  ```sh
+  export MINIO_SERVER_URL=https://s3.example.com
+  ```
+</ParamField>
+
+## Networking and virtual hosting
+
+<ParamField path="MINIO_DOMAIN" type="csv">
+  Enables virtual-host-style bucket addressing. Requests where the `Host` header matches `<bucket>.<domain>` are routed automatically. Accepts a comma-separated list of domains.
+
+  ```sh
+  export MINIO_DOMAIN=s3.example.com
+  ```
+</ParamField>
+
+<ParamField path="MINIO_PUBLIC_IPS" type="csv">
+  Comma-separated list of public IP addresses for a distributed deployment. Used to resolve internal node addresses.
+
+  ```sh
+  export MINIO_PUBLIC_IPS=203.0.113.10,203.0.113.11
+  ```
+</ParamField>
+
+## Etcd federation
+
+<ParamField path="MINIO_ETCD_ENDPOINTS" type="csv">
+  Comma-separated list of etcd endpoints. Required to enable IAM federation or bucket DNS via etcd.
+
+  ```sh
+  export MINIO_ETCD_ENDPOINTS="http://etcd1:2379,http://etcd2:2379"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ETCD_PATH_PREFIX" type="path">
+  Namespace prefix to isolate tenants in a shared etcd cluster. When set, bucket federation is disabled.
+
+  ```sh
+  export MINIO_ETCD_PATH_PREFIX=customer1/
+  ```
+</ParamField>
+
+<ParamField path="MINIO_ETCD_CLIENT_CERT" type="path">
+  Path to the client certificate for mTLS authentication with etcd.
+</ParamField>
+
+<ParamField path="MINIO_ETCD_CLIENT_CERT_KEY" type="path">
+  Path to the client certificate key for mTLS authentication with etcd.
+</ParamField>

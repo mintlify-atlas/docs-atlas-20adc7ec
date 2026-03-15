@@ -1,0 +1,150 @@
+---
+title: "Metrics overview"
+description: "MinIO exposes Prometheus-compatible metrics across multiple endpoints covering API requests, cluster health, drives, ILM, and replication."
+---
+
+MinIO exposes monitoring data as Prometheus-compatible metrics. Metrics are organized into two versioned API families: **v2** (stable, widely used) and **v3** (newer, more granular collector-path model). Both are authenticated by default.
+
+## Metrics API versions
+
+<Tabs>
+  <Tab title="Metrics v2">
+    The v2 endpoints are stable and return flat Prometheus text exposition format. Each path covers a different scope:
+
+    | Endpoint | Scope |
+    |---|---|
+    | `/minio/v2/metrics/cluster` | Cluster-wide metrics (capacity, health, replication) |
+    | `/minio/v2/metrics/bucket` | Per-bucket metrics (traffic, replication, usage) |
+    | `/minio/v2/metrics/node` | Per-node metrics (drives, processes, go runtime) |
+    | `/minio/v2/metrics/resource` | Resource metrics (CPU, memory, network interfaces, drive iostat) |
+
+    Cluster metrics can be collected from **any single node** — you do not need to scrape every node individually. For deployments behind a load balancer, point the scrape target at the load balancer address.
+
+    <Warning>
+      The legacy `/minio/prometheus/metrics` endpoint is deprecated. Use the `/minio/v2/metrics/*` endpoints instead.
+    </Warning>
+  </Tab>
+  <Tab title="Metrics v3">
+    The v3 endpoint is at `/minio/metrics/v3` and uses a hierarchical collector-path model. Each sub-path maps to a specific collector group:
+
+    | Collector path | Description |
+    |---|---|
+    | `/api/requests` | S3 API request counts, errors, TTFB distribution, traffic bytes |
+    | `/bucket/api/<bucket>` | Per-bucket S3 request and traffic metrics |
+    | `/bucket/replication/<bucket>` | Per-bucket replication metrics |
+    | `/cluster/health` | Drive and node online/offline counts, raw and usable capacity |
+    | `/cluster/usage/objects` | Object counts, sizes, versions, delete markers |
+    | `/cluster/usage/buckets` | Per-bucket usage and quota |
+    | `/cluster/erasure-set` | Erasure set health, read/write quorum and tolerance |
+    | `/cluster/iam` | IAM sync metrics and plugin authn stats |
+    | `/cluster/config` | Parity configuration (standard and reduced-redundancy storage) |
+    | `/system/drive` | Per-drive bytes, inodes, errors, latency, iostat |
+    | `/system/memory` | Node memory (total, used, free, cache, buffers) |
+    | `/system/cpu` | CPU user, system, idle, iowait, load averages |
+    | `/system/network/internode` | Internode traffic bytes and dial errors |
+    | `/system/process` | Go process metrics (goroutines, file descriptors, CPU time, memory) |
+    | `/ilm` | ILM expiry and transition task queue depths |
+    | `/replication` | Replication worker counts, queue depth, transfer rates |
+    | `/scanner` | Scanner bucket and object scan counters |
+    | `/audit` | Audit target queue length and message counts |
+    | `/logger/webhook` | Logger webhook queue length and message counts |
+    | `/notification` | Bucket notification event counters |
+    | `/debug/go` | Standard Go collector metrics |
+
+    Append `?list` to any v3 path to retrieve a machine-readable table of all metrics available at that path and its descendants.
+
+    Bucket metrics require specifying the bucket name as the final path component, for example:
+    ```
+    GET /minio/metrics/v3/bucket/api/my-bucket
+    ```
+  </Tab>
+</Tabs>
+
+## Metric naming conventions
+
+All MinIO metrics use the `minio_` prefix. v2 metric names follow the pattern:
+
+```
+minio_<subsystem>_<metric_name>_<unit>
+```
+
+Examples:
+- `minio_cluster_capacity_raw_total_bytes` — raw total capacity across the cluster
+- `minio_node_drive_errors_ioerror` — I/O error count per drive
+- `minio_s3_requests_total` — total S3 requests
+- `minio_heal_objects_total` — total objects scanned in the current healing run
+
+v3 metric names follow the same prefix convention and are constructed from the collector path. For example, metrics under `/cluster/health` carry the prefix `minio_cluster_health_`.
+
+## Metrics categories
+
+<CardGroup cols={2}>
+  <Card title="API" icon="bolt">
+    Request counts, error rates (4xx/5xx), in-flight requests, time-to-first-byte distributions, and S3 traffic bytes — at the node level and per bucket.
+  </Card>
+  <Card title="Cluster" icon="server">
+    Capacity (raw and usable), drive and node online/offline counts, erasure set health, write quorum, object counts and size distributions.
+  </Card>
+  <Card title="Drive" icon="hard-drive">
+    Per-drive used/free bytes and inodes, timeout errors, I/O errors, waiting I/O operations, API latency, and iostat counters (reads/writes per second, await times, utilization percentage).
+  </Card>
+  <Card title="ILM" icon="clock">
+    Expiry pending tasks, transition active and pending tasks, missed immediate transition tasks, and total object versions scanned for ILM actions.
+  </Card>
+  <Card title="Replication" icon="arrows-rotate">
+    Cluster and bucket replication metrics: bytes and objects sent/received, failed counts in the last minute and last hour, replication link latency, worker counts, and queue depth.
+  </Card>
+  <Card title="Node" icon="microchip">
+    Go runtime metrics (goroutines, GC), process CPU and memory, file descriptors, syscall counts, IAM sync durations, scanner progress, and tier request stats.
+  </Card>
+</CardGroup>
+
+## Authentication
+
+All metrics endpoints require authentication by default. MinIO supports two authentication modes controlled by the `MINIO_PROMETHEUS_AUTH_TYPE` environment variable:
+
+| Mode | Value | Description |
+|---|---|---|
+| JWT (default) | `jwt` | Requires a bearer token generated by `mc admin prometheus generate` |
+| Public | `public` | No authentication required — suitable for internal/private networks only |
+
+<CodeGroup>
+```bash Enable JWT authentication (default)
+export MINIO_PROMETHEUS_AUTH_TYPE="jwt"
+minio server /mnt/data
+```
+
+```bash Enable public access
+export MINIO_PROMETHEUS_AUTH_TYPE="public"
+minio server /mnt/data
+```
+</CodeGroup>
+
+<Warning>
+  Setting `MINIO_PROMETHEUS_AUTH_TYPE=public` exposes all metrics without authentication. Only use this mode when the metrics endpoint is not reachable from untrusted networks.
+</Warning>
+
+## Scraping metrics manually
+
+You can query any metrics endpoint directly with `curl`. For authenticated access, pass the bearer token generated by `mc admin prometheus generate`:
+
+```bash
+# Generate scrape config and extract the token
+mc admin prometheus generate myminio cluster
+
+# Scrape cluster metrics with the token
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:9000/minio/v2/metrics/cluster
+```
+
+For public endpoints:
+
+```bash
+curl http://localhost:9000/minio/v2/metrics/cluster
+```
+
+To list all v3 metrics available under a sub-path:
+
+```bash
+curl http://localhost:9000/minio/metrics/v3/cluster?list
+```

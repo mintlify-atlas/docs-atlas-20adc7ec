@@ -1,0 +1,135 @@
+---
+title: "Security overview"
+description: "A summary of MinIO's layered security model: authentication, encryption, access control, and transport security."
+---
+
+MinIO provides a layered security model that covers authentication, authorization, data encryption, and transport security. This page summarizes each layer and links to the dedicated guides.
+
+<CardGroup cols={2}>
+  <Card title="Identity and Access Management" icon="users" href="/security/iam">
+    Manage users, groups, service accounts, and federated identity via LDAP or OIDC.
+  </Card>
+  <Card title="Security Token Service" icon="key" href="/security/sts">
+    Issue short-lived credentials through AssumeRole, WebIdentity, LDAP, and certificate-based flows.
+  </Card>
+  <Card title="Key Management Service" icon="lock" href="/security/kms">
+    Integrate with KES and external KMS backends for SSE-S3 encryption key management.
+  </Card>
+  <Card title="Access policies" icon="shield" href="/security/access-policies">
+    Write IAM and bucket policies using the S3 policy JSON format to control object-level access.
+  </Card>
+</CardGroup>
+
+## Authentication
+
+MinIO recognizes three classes of credentials:
+
+| Credential type | How it is created | Typical use |
+|---|---|---|
+| Root credentials | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` env vars at startup | Administrative operations only |
+| IAM user credentials | `mc admin user add` | Long-lived access for internal users |
+| STS temporary credentials | STS API (`AssumeRole`, `AssumeRoleWithWebIdentity`, `AssumeRoleWithLDAPIdentity`, `AssumeRoleWithCertificate`) | Applications and federated users |
+
+<Warning>
+Root credentials grant unrestricted access to all resources and administrative APIs. Avoid using root credentials in application code. Create IAM users or use STS instead.
+</Warning>
+
+### Root credentials
+
+The root user is set by exporting environment variables before starting the server:
+
+```bash
+export MINIO_ROOT_USER=your-access-key
+export MINIO_ROOT_PASSWORD=your-secret-key
+minio server ~/data
+```
+
+If neither variable is set, MinIO defaults to `minioadmin` / `minioadmin`.
+
+### IAM users and groups
+
+MinIO's built-in IAM system stores users, groups, and policy mappings alongside object data. When LDAP is enabled, internal long-term users are disabled and directory users take their place.
+
+See [Identity and Access Management](/security/iam) for full details.
+
+### STS temporary credentials
+
+The STS API is compatible with the AWS STS wire protocol. Credentials carry an expiry time (minimum 900 seconds, maximum 365 days) and cannot be used after they expire.
+
+See [Security Token Service](/security/sts) for full details.
+
+## Encryption
+
+MinIO supports server-side encryption (SSE) in two modes:
+
+### SSE-C — client-provided keys
+
+The S3 client supplies a 256-bit key in the HTTP request headers (`X-Amz-Server-Side-Encryption-Customer-Key`). The key is never stored by MinIO; it resides in RAM only during the en/decryption operation. SSE-C requires TLS/HTTPS because the key travels in request headers.
+
+Key rotation is performed by issuing an S3 COPY request where source and destination are the same object, including both the current key and the new key in the COPY headers.
+
+### SSE-S3 — KMS-managed keys
+
+MinIO requests a new data key from a KMS for each uploaded object. The plain data key is used only in RAM and is then discarded; the encrypted form is stored in object metadata alongside a master key ID. The KMS never stores any per-object key — it only performs seal and unseal operations on the data keys.
+
+SSE-S3 requires a valid KMS configuration. See [Key Management Service](/security/kms) for setup instructions.
+
+### Cryptographic implementation details
+
+- **Key derivation**: HMAC-SHA-256 (PRF)
+- **Content encryption**: AES-256-GCM when the CPU has AES-NI; ChaCha20-Poly1305 otherwise
+- **Chunk size**: 65,536 bytes per chunk
+- **Maximum object size**: 256 TiB
+
+For each encrypted object there are three distinct keys:
+
+- **OEK** (Object Encryption Key) — unique per object, stored encrypted in object metadata
+- **KEK** (Key Encryption Key) — derived on demand from the EK; never stored
+- **EK** (External Key) — the SSE-C client key or the KMS-generated data key
+
+### Auto-encryption
+
+Auto-encryption forces SSE-S3 on all objects in a bucket when KMS is configured:
+
+```bash
+mc encrypt set sse-s3 myminio/my-bucket
+mc encrypt info myminio/my-bucket
+```
+
+## Transport security (TLS)
+
+MinIO supports TLS 1.2 and later for all client-server and server-server communication. Place TLS certificates in the MinIO certificates directory (`${HOME}/.minio/certs/` by default) and MinIO will pick them up automatically on startup.
+
+SSE-C is only accepted over TLS connections. Attempts to use SSE-C over plain HTTP are rejected.
+
+## Access control
+
+Authorization in MinIO follows a deny-by-default model. Access is only granted when an applicable `Allow` statement exists in an IAM or bucket policy and no explicit `Deny` overrides it.
+
+### IAM policies
+
+Policies are attached to IAM users, groups, or STS sessions. They use the same JSON format as AWS IAM policies. MinIO ships four built-in canned policies:
+
+| Policy name | Grants |
+|---|---|
+| `readonly` | `s3:GetBucketLocation`, `s3:GetObject` on all resources |
+| `writeonly` | `s3:PutObject` on all resources |
+| `readwrite` | `s3:*` on all resources |
+| `diagnostics` | Admin observability actions (Prometheus, profiling, tracing, logs) |
+
+### Bucket policies
+
+Bucket policies control access at the bucket and prefix level and are stored as part of bucket metadata. They can grant access to anonymous (unauthenticated) principals as well as to specific IAM users.
+
+See [Access policies](/security/access-policies) for policy JSON format and examples.
+
+### Policy plugin (OPA / external webhook)
+
+MinIO can delegate authorization to an external HTTP endpoint via the Access Management Plugin. Every authenticated API call is forwarded to the webhook, which returns `allow` or `deny`. This supports OPA and any custom authorization service.
+
+## Secure erasure
+
+Because SSE-S3 objects can only be decrypted when the KMS master key is available, you can implement secure erasure at the KMS layer:
+
+- **Seal the KMS** to lock all SSE-S3 objects protected by keys on that KMS.
+- **Delete a master key** to permanently destroy all objects encrypted with it — equivalent to a cryptographic wipe.

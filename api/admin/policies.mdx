@@ -1,0 +1,191 @@
+---
+title: "Policy Management API"
+description: "Admin API endpoints for creating, listing, and attaching IAM policies in MinIO."
+---
+
+MinIO uses IAM-compatible JSON policies to control access. You can create named (canned) policies and attach them to users or groups. All policy management endpoints require root credentials or an IAM user with the appropriate admin policy action.
+
+## Add a canned policy
+
+Create or replace a named IAM policy.
+
+**`PUT /minio/admin/v3/add-canned-policy?name={name}`**
+
+Requires: `admin:CreatePolicy` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/add-canned-policy?name=readwrite-docs" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        "Resource": ["arn:aws:s3:::docs/*"]
+      }
+    ]
+  }'
+```
+
+```go madmin SDK
+policyJSON := []byte(`{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": ["arn:aws:s3:::docs/*"]
+    }
+  ]
+}`)
+err := adminClient.AddCannedPolicy(context.Background(), "readwrite-docs", policyJSON)
+```
+
+</CodeGroup>
+
+<ParamField query="name" type="string" required>
+  The name to assign to the policy. This name is used when attaching the policy to users or groups.
+</ParamField>
+
+<ParamField body="policy" type="string" required>
+  A JSON document conforming to the IAM policy language. Must include `Version` and one or more `Statement` objects.
+</ParamField>
+
+**Response:** `200 OK` on success.
+
+---
+
+## Remove a canned policy
+
+Delete a named policy. The policy is detached from all users and groups before deletion.
+
+**`DELETE /minio/admin/v3/remove-canned-policy?name={name}`**
+
+Requires: `admin:DeletePolicy` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE \
+  "https://minio.example.com/minio/admin/v3/remove-canned-policy?name=readwrite-docs" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+err := adminClient.RemoveCannedPolicy(context.Background(), "readwrite-docs")
+```
+
+</CodeGroup>
+
+<ParamField query="name" type="string" required>
+  The name of the policy to delete.
+</ParamField>
+
+**Response:** `200 OK` on success.
+
+---
+
+## List canned policies
+
+Return all named policies defined on the server.
+
+**`GET /minio/admin/v3/list-canned-policies`**
+
+Requires: `admin:ListUserPolicies` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/list-canned-policies" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+policies, err := adminClient.ListCannedPolicies(context.Background())
+for name, doc := range policies {
+    fmt.Println(name, string(doc))
+}
+```
+
+</CodeGroup>
+
+<ParamField query="bucket" type="string">
+  When provided, returns only policies that grant access to the specified bucket.
+</ParamField>
+
+**Response body (JSON):** A map of policy name to policy document.
+
+```json
+{
+  "readwrite-docs": {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": ["arn:aws:s3:::docs/*"]}]
+  },
+  "readonly": {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::*/*"]}]
+  }
+}
+```
+
+---
+
+## Attach policy to user or group
+
+Assign one or more named policies to a user or group.
+
+**`PUT /minio/admin/v3/set-user-or-group-policy?policyName={policyName}&userOrGroup={userOrGroup}&isGroup={isGroup}`**
+
+Requires: `admin:SetUserOrGroupPolicy` admin action.
+
+<CodeGroup>
+
+```bash curl
+# Attach policy to a user
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/set-user-or-group-policy?policyName=readwrite-docs&userOrGroup=alice&isGroup=false" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+
+# Attach policy to a group
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/set-user-or-group-policy?policyName=readwrite-docs&userOrGroup=developers&isGroup=true" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+// Attach to a user
+err := adminClient.SetPolicy(context.Background(), "readwrite-docs", "alice", false)
+
+// Attach to a group
+err = adminClient.SetPolicy(context.Background(), "readwrite-docs", "developers", true)
+```
+
+</CodeGroup>
+
+<ParamField query="policyName" type="string" required>
+  Comma-separated list of policy names to attach.
+</ParamField>
+
+<ParamField query="userOrGroup" type="string" required>
+  The access key of the user, or the name of the group.
+</ParamField>
+
+<ParamField query="isGroup" type="boolean" required>
+  `true` when attaching to a group, `false` when attaching to a user.
+</ParamField>
+
+**Response:** `200 OK` on success.
+
+<Note>
+Calling this endpoint replaces any previously attached policies. To retain existing policies, retrieve them first and include them in the new `policyName` list.
+</Note>

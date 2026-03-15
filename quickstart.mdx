@@ -1,80 +1,127 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get a MinIO server running in under 5 minutes."
 ---
 
-## Get started in three steps
+MinIO is a high-performance, S3-compatible object storage server. This guide takes you from zero to a running instance with bucket operations in under five minutes.
 
-Get your documentation site running locally and make your first customization.
+<Warning>
+  The community edition is now **source-only**. Pre-compiled binaries are no longer published. You must build from source or use Docker. See [Install from source](/install/from-source) or [Docker deployment](/install/docker).
+</Warning>
 
-### Step 1: Set up your local environment
+## Start a single-node server
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Install the binary">
+    Requires Go 1.24 or later. Run:
 
-### Step 2: Deploy your changes
+    ```sh
+    go install github.com/minio/minio@latest
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Confirm the binary is on your `PATH`:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```sh
+    minio --version
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Start the server">
+    Pass any empty directory as the storage path:
 
-### Step 3: Go live
+    ```sh
+    minio server /data
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    To pin the console to a fixed port (recommended), use `--console-address`:
+
+    ```sh
+    minio server /data --console-address :9001
+    ```
+
+    MinIO binds the S3 API on port **9000** and the web console on **9001** (or a random port if `--console-address` is not set).
+  </Step>
+
+  <Step title="Open the web console">
+    Point your browser to [http://127.0.0.1:9000](http://127.0.0.1:9000) and log in with the default root credentials.
+
+    <Warning>
+      The default credentials are `minioadmin` / `minioadmin`. Change them before exposing MinIO to a network by setting the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` environment variables before starting the server.
+    </Warning>
+
+    From the console you can create buckets, upload objects, and browse stored data.
+  </Step>
+
+  <Step title="Connect with the mc client">
+    Install the MinIO Client (`mc`) and verify connectivity:
+
+    ```sh
+    mc alias set local http://localhost:9000 minioadmin minioadmin
+    mc admin info local
+    ```
+
+    Create a bucket, copy a file, and list its contents:
+
+    ```sh
+    mc mb local/my-bucket
+    mc cp ~/Downloads/mydata local/my-bucket/
+    mc ls local/my-bucket/
+    ```
+  </Step>
+</Steps>
+
+## Using the mc client
+
+The `mc` command-line tool provides Unix-style commands (`ls`, `cp`, `mb`, `mirror`, `diff`) for any S3-compatible endpoint.
+
+### Set an alias
+
+An alias stores connection details so you don't repeat credentials on every command:
+
+```sh
+mc alias set local http://localhost:9000 minioadmin minioadmin
+```
+
+### Common operations
+
+```sh
+# Create a bucket
+mc mb local/my-bucket
+
+# Copy a local file into a bucket
+mc cp ~/Downloads/mydata local/my-bucket/
+
+# List objects in a bucket
+mc ls local/my-bucket/
+
+# Show server diagnostics
+mc admin info local
+```
+
+## Ports reference
+
+| Port | Purpose |
+|------|---------|
+| 9000 | S3 API and web console (default) |
+| 9001 | Dedicated console port when `--console-address :9001` is set |
+
+<Note>
+  MinIO runs the console on a random port by default. Use `--console-address` to choose a specific port for reproducible access.
+</Note>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Install from source" icon="code" href="/install/from-source">
+    Build MinIO with Go for full control over the binary.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/install/docker">
+    Run MinIO in a container with persistent volumes.
+  </Card>
+  <Card title="Kubernetes" icon="server" href="/install/kubernetes">
+    Deploy MinIO on Kubernetes via Helm or the Operator.
+  </Card>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    Understand erasure sets, distributed mode, and storage internals.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

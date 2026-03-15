@@ -1,0 +1,186 @@
+---
+title: "Heal API"
+description: "Admin API endpoints for triggering and monitoring MinIO erasure-code storage healing."
+---
+
+The Heal API scans objects and metadata stored on MinIO erasure-coded disks and repairs any corrupted or missing shards. Healing is available only on deployments running in erasure-code mode (single-node multi-drive or distributed).
+
+<Warning>
+Heal operations are compute and I/O intensive. Run them during off-peak hours on production clusters.
+</Warning>
+
+## Overview
+
+A heal sequence is identified by a client token returned when the sequence is started. The same token must be passed in subsequent requests to poll progress or stop the sequence.
+
+Heal paths follow a hierarchy:
+
+- **All buckets and objects:** `POST /minio/admin/v3/heal/`
+- **Single bucket:** `POST /minio/admin/v3/heal/{bucket}`
+- **Object prefix or single object:** `POST /minio/admin/v3/heal/{bucket}/{prefix}`
+
+---
+
+## Start or query a heal sequence
+
+Initiate a new heal sequence, or check the status of an existing one.
+
+**`POST /minio/admin/v3/heal/`**
+**`POST /minio/admin/v3/heal/{bucket}`**
+**`POST /minio/admin/v3/heal/{bucket}/{prefix}`**
+
+Requires: `admin:Heal` admin action.
+
+<CodeGroup>
+
+```bash curl
+# Start healing all buckets
+curl -X POST "https://minio.example.com/minio/admin/v3/heal/" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"recursive": true, "dryRun": false, "remove": false, "recreate": false}'
+
+# Start healing a specific bucket
+curl -X POST "https://minio.example.com/minio/admin/v3/heal/my-bucket" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"recursive": true, "dryRun": false, "remove": false, "recreate": false}'
+```
+
+```go madmin SDK
+// Heal all objects in a bucket
+healCh, err := adminClient.Heal(context.Background(), "my-bucket", "",
+    madmin.HealOpts{
+        Recursive: true,
+        DryRun:    false,
+        Remove:    false,
+        Recreate:  false,
+    },
+    "",   // client token, empty to start new sequence
+    false, // forceStart
+    false, // forceStop
+)
+for item := range healCh {
+    if item.Err != nil {
+        log.Println("heal error:", item.Err)
+        break
+    }
+    fmt.Println(item.Type, item.Bucket, item.Object, item.Detail)
+}
+```
+
+</CodeGroup>
+
+<ParamField path="path.bucket" type="string">
+  Bucket to heal. Omit to heal all buckets.
+</ParamField>
+
+<ParamField path="path.prefix" type="string">
+  Object key prefix to heal within the bucket.
+</ParamField>
+
+<ParamField body="recursive" type="boolean" default="false">
+  Recursively heal all objects under the given prefix.
+</ParamField>
+
+<ParamField body="dryRun" type="boolean" default="false">
+  Scan and report issues without making any repairs.
+</ParamField>
+
+<ParamField body="remove" type="boolean" default="false">
+  Remove objects that cannot be healed because they are missing more shards than the erasure code can recover.
+</ParamField>
+
+<ParamField body="recreate" type="boolean" default="false">
+  Force recreation of objects to fix any data inconsistencies, even if the object appears intact.
+</ParamField>
+
+<ParamField query="clientToken" type="string">
+  Token from a previous heal response. Supply this to resume polling an existing sequence rather than starting a new one.
+</ParamField>
+
+<ParamField query="forceStart" type="boolean" default="false">
+  Force a new heal sequence even if one is already in progress on this path.
+</ParamField>
+
+<ParamField query="forceStop" type="boolean" default="false">
+  Stop an in-progress heal sequence.
+</ParamField>
+
+**Response body (JSON):**
+
+The initial response (when starting a new sequence) returns a `HealStartSuccess` object:
+
+<ResponseField name="clientToken" type="string">
+  Token that identifies this heal sequence. Use it to poll progress.
+</ResponseField>
+
+<ResponseField name="clientAddress" type="string">
+  The server node that owns this heal sequence.
+</ResponseField>
+
+<ResponseField name="startTime" type="string">
+  ISO 8601 timestamp when the sequence started.
+</ResponseField>
+
+Subsequent requests (passing `clientToken`) stream `HealTaskStatus` objects:
+
+<ResponseField name="HealTaskStatus" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Summary" type="string">Human-readable summary of progress.</ResponseField>
+    <ResponseField name="FailureDetail" type="string">Error detail if the sequence failed.</ResponseField>
+    <ResponseField name="StartTime" type="string">Sequence start time.</ResponseField>
+    <ResponseField name="HealSettings" type="object">The heal options in effect.</ResponseField>
+    <ResponseField name="NumDisks" type="number">Total number of disks in the cluster.</ResponseField>
+    <ResponseField name="Items" type="object[]">
+      List of healed items, each containing:
+      - `Type`: item type (`bucket`, `object`, `metadata`)
+      - `Bucket`: bucket name
+      - `Object`: object key
+      - `Detail`: description of what was repaired
+      - `Before`: disk states before healing
+      - `After`: disk states after healing
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Background heal status
+
+Retrieve the status of the automatic background heal process that runs continuously in erasure-code deployments.
+
+**`POST /minio/admin/v3/background-heal/status`**
+
+Requires: `admin:Heal` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X POST "https://minio.example.com/minio/admin/v3/background-heal/status" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+status, err := adminClient.BackgroundHealStatus(context.Background())
+fmt.Println(status.ScannedItemsCount, status.HealedItemsCount)
+```
+
+</CodeGroup>
+
+**Response body (JSON):**
+
+<ResponseField name="ScannedItemsCount" type="number">
+  Total objects scanned by the background healer.
+</ResponseField>
+
+<ResponseField name="HealedItemsCount" type="number">
+  Total objects repaired by the background healer.
+</ResponseField>
+
+<ResponseField name="HealedBytes" type="number">
+  Total bytes repaired.
+</ResponseField>

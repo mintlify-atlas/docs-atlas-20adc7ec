@@ -1,0 +1,211 @@
+---
+title: "User Management API"
+description: "Admin API endpoints for creating, listing, updating, and removing MinIO IAM users."
+---
+
+These endpoints manage internal MinIO IAM users. Each request must be authenticated with root credentials or an IAM user that holds the required admin policy action.
+
+<Info>
+These endpoints manage **internal** MinIO users only. For LDAP-managed identities, use the `/minio/admin/v3/idp/ldap/` endpoints. Temporary credentials (STS) and service accounts cannot be managed through these endpoints.
+</Info>
+
+## List users
+
+Return all internal IAM users.
+
+**`GET /minio/admin/v3/list-users`**
+
+Requires: `s3:ListUsers` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/list-users" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+users, err := adminClient.ListUsers(context.Background())
+for accessKey, info := range users {
+    fmt.Println(accessKey, info.Status)
+}
+```
+
+</CodeGroup>
+
+<ParamField query="bucket" type="string">
+  When provided, returns only users that have access to the specified bucket.
+</ParamField>
+
+**Response:** An encrypted JSON map of `accessKey → UserInfo`. The response body is encrypted with the admin's secret key using `madmin.EncryptData`.
+
+<ResponseField name="UserInfo" type="object">
+  Per-user information.
+
+  <Expandable title="properties">
+    <ResponseField name="secretKey" type="string">
+      The user's secret key (returned only to the root user).
+    </ResponseField>
+    <ResponseField name="policyName" type="string">
+      Comma-separated list of policies attached to the user.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      `enabled` or `disabled`.
+    </ResponseField>
+    <ResponseField name="memberOf" type="string[]">
+      Groups the user belongs to.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Add or update user
+
+Create a new IAM user or update an existing user's secret key.
+
+**`PUT /minio/admin/v3/add-user?accessKey={accessKey}`**
+
+Requires: `admin:CreateUser` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/add-user?accessKey=alice" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"secretKey": "supersecretpassword"}'
+```
+
+```go madmin SDK
+err := adminClient.AddUser(context.Background(), "alice", "supersecretpassword")
+```
+
+</CodeGroup>
+
+<ParamField query="accessKey" type="string" required>
+  The access key (username) for the new or updated user.
+</ParamField>
+
+<ParamField body="secretKey" type="string" required>
+  The secret key (password) for the user. The body is encrypted with `madmin.EncryptData`.
+</ParamField>
+
+**Response:** `200 OK` on success.
+
+---
+
+## Remove user
+
+Permanently delete an IAM user and all their service accounts.
+
+**`DELETE /minio/admin/v3/remove-user?accessKey={accessKey}`**
+
+Requires: `admin:DeleteUser` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE \
+  "https://minio.example.com/minio/admin/v3/remove-user?accessKey=alice" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+err := adminClient.RemoveUser(context.Background(), "alice")
+```
+
+</CodeGroup>
+
+<ParamField query="accessKey" type="string" required>
+  Access key of the user to delete.
+</ParamField>
+
+<Warning>
+This operation is permanent. The user and all their service accounts are removed immediately. You cannot delete the root user or temporary credentials via this endpoint.
+</Warning>
+
+**Response:** `200 OK` on success.
+
+---
+
+## Get user info
+
+Retrieve detailed information about a specific user.
+
+**`GET /minio/admin/v3/user-info?accessKey={accessKey}`**
+
+Requires: `admin:GetUser` admin action (or the caller may query their own info).
+
+<CodeGroup>
+
+```bash curl
+curl \
+  "https://minio.example.com/minio/admin/v3/user-info?accessKey=alice" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+info, err := adminClient.GetUserInfo(context.Background(), "alice")
+fmt.Println(info.PolicyName, info.Status)
+```
+
+</CodeGroup>
+
+<ParamField query="accessKey" type="string" required>
+  The access key of the user to describe.
+</ParamField>
+
+**Response body (JSON):**
+
+<ResponseField name="policyName" type="string">
+  Comma-separated list of policies attached to the user.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `enabled` or `disabled`.
+</ResponseField>
+
+<ResponseField name="memberOf" type="string[]">
+  Groups the user belongs to.
+</ResponseField>
+
+---
+
+## Set user status
+
+Enable or disable an existing user.
+
+**`PUT /minio/admin/v3/set-user-status?accessKey={accessKey}&status={status}`**
+
+Requires: `admin:EnableUser` or `admin:DisableUser` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/set-user-status?accessKey=alice&status=disabled" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+err := adminClient.SetUserStatus(context.Background(), "alice", madmin.AccountDisabled)
+```
+
+</CodeGroup>
+
+<ParamField query="accessKey" type="string" required>
+  Access key of the user to update.
+</ParamField>
+
+<ParamField query="status" type="string" required>
+  `enabled` to activate the user, `disabled` to prevent authentication.
+</ParamField>
+
+**Response:** `200 OK` on success.

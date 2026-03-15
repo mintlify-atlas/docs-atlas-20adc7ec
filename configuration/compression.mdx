@@ -1,0 +1,194 @@
+---
+title: "Object compression"
+description: "Configure MinIO to compress objects before writing them to disk using streaming S2 compression."
+---
+
+MinIO supports streaming server-side compression of objects before they are written to disk. Compression happens in-flight: objects are compressed as they arrive and are stored in compressed form.
+
+MinIO uses the [`klauspost/compress/s2`](https://github.com/klauspost/compress/tree/master/s2) algorithm, which is optimised for machine-generated content:
+
+- Write throughput: at least **500 MB/s per CPU core**, scaling with core count
+- Decompression speed: at least **1 GB/s**
+
+On spinning-disk (HDD) systems where raw I/O is the bottleneck, enabling compression for compressible content typically increases overall throughput as well as reducing storage usage.
+
+## Enable compression
+
+Compression is disabled by default. Enable it using environment variables or `mc admin config`.
+
+<Tabs>
+  <Tab title="Environment variables">
+    ```sh
+    export MINIO_COMPRESSION_ENABLE="on"
+    export MINIO_COMPRESSION_EXTENSIONS=".txt,.log,.csv,.json,.tar,.xml,.bin"
+    export MINIO_COMPRESSION_MIME_TYPES="text/*,application/json,application/xml"
+    minio server /data
+    ```
+  </Tab>
+  <Tab title="mc admin config">
+    ```sh
+    mc admin config set myminio compression \
+      enable=on \
+      extensions=".txt,.log,.csv,.json,.tar,.xml,.bin" \
+      mime_types="text/*,application/json,application/xml"
+    ```
+
+    The compression sub-system is dynamic: changes take effect immediately without a server restart.
+  </Tab>
+</Tabs>
+
+## Configuration reference
+
+<ParamField path="MINIO_COMPRESSION_ENABLE" type="on|off" default="off">
+  Enables or disables server-side compression.
+
+  ```sh
+  export MINIO_COMPRESSION_ENABLE="on"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_EXTENSIONS" type="csv" default=".txt,.log,.csv,.json,.tar,.xml,.bin">
+  Comma-separated list of file extensions to compress. Extensions must include the leading dot.
+
+  Set to `*` to compress objects regardless of their extension (subject to the excluded types list below).
+
+  ```sh
+  export MINIO_COMPRESSION_EXTENSIONS=".txt,.log,.csv,.json,.tar,.xml,.bin"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_MIME_TYPES" type="csv" default="text/*,application/json,application/xml,binary/octet-stream">
+  Comma-separated list of MIME types to compress. Wildcard patterns such as `text/*` are supported.
+
+  Set to `*` to compress objects regardless of their content type (subject to the excluded types list below).
+
+  ```sh
+  export MINIO_COMPRESSION_MIME_TYPES="text/*,application/json,application/xml"
+  ```
+</ParamField>
+
+<ParamField path="MINIO_COMPRESSION_ALLOW_ENCRYPTION" type="on|off" default="off">
+  Allows compression to be applied to objects that are also encrypted. Disabled by default.
+
+  See [Compression and encryption](#compression-and-encryption) before enabling this.
+
+  ```sh
+  export MINIO_COMPRESSION_ALLOW_ENCRYPTION="off"
+  ```
+</ParamField>
+
+## Compress all content
+
+To compress every object regardless of extension or MIME type, set both values to `*`:
+
+<Tabs>
+  <Tab title="Environment variables">
+    ```sh
+    export MINIO_COMPRESSION_ENABLE="on"
+    export MINIO_COMPRESSION_EXTENSIONS="*"
+    export MINIO_COMPRESSION_MIME_TYPES="*"
+    ```
+  </Tab>
+  <Tab title="mc admin config">
+    ```sh
+    mc admin config set myminio compression enable="on" extensions="" mime_types=""
+    ```
+
+    When using `mc admin config`, set both values to empty strings to match all types.
+  </Tab>
+</Tabs>
+
+<Note>
+When setting via environment variables, use `*` to mean "all". When setting via `mc admin config`, use an empty string. These are not interchangeable.
+</Note>
+
+## View current compression settings
+
+```sh
+mc admin config get myminio compression
+```
+
+Example output:
+
+```
+compression extensions=".txt,.log,.csv,.json,.tar,.xml,.bin" mime_types="text/*,application/json,application/xml"
+```
+
+## What to compress
+
+Compression is most effective on human-readable and structured text formats. The default extension and MIME type lists target the most commonly compressible content.
+
+| Type | Examples |
+|---|---|
+| Plain text | `.txt`, `.log`, `text/*` |
+| Structured data | `.csv`, `.json`, `.xml`, `application/json`, `application/xml` |
+| Archives (uncompressed) | `.tar`, `application/x-tar` |
+| Binary streams | `.bin`, `binary/octet-stream` |
+
+## What not to compress
+
+Already-compressed formats do not benefit from re-compression and should be excluded. The following extensions and MIME types are **always excluded**, even when compression is set to compress all types:
+
+### Always-excluded extensions
+
+| Extension | Format |
+|---|---|
+| `.gz` | GZIP |
+| `.bz2` | BZIP2 |
+| `.rar` | WinRAR |
+| `.zip` | ZIP |
+| `.7z` | 7-Zip |
+| `.xz` | LZMA |
+| `.mp4` | MP4 video |
+| `.mkv` | Matroska video |
+| `.mov` | QuickTime video |
+
+### Always-excluded MIME types
+
+| MIME type | Description |
+|---|---|
+| `video/*` | All video formats |
+| `audio/*` | All audio formats |
+| `application/zip` | ZIP archives |
+| `application/x-gzip` | GZIP archives |
+| `application/x-bz2` | BZIP2 archives |
+| `application/x-compress` | Compress archives |
+| `application/x-xz` | XZ archives |
+
+<Note>
+Pre-compressed input still compresses at over 2 GiB/s per core with negligible overhead, so the performance impact of accidentally re-compressing an already-compressed object is minimal. The excluded list exists to avoid wasting CPU on content that will not shrink.
+</Note>
+
+## Compression and encryption
+
+Combining compression with encryption is not safe in all configurations. If the compression ratio of content reveals information about the plaintext, it can be vulnerable to CRIME-class attacks.
+
+For this reason, compression is disabled when SSE is active, and must be explicitly re-enabled:
+
+<Tabs>
+  <Tab title="mc admin config">
+    ```sh
+    mc admin config set myminio compression allow_encryption=on
+    ```
+  </Tab>
+  <Tab title="Environment variable">
+    ```sh
+    export MINIO_COMPRESSION_ALLOW_ENCRYPTION="on"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Consult MinIO security experts on [SUBNET](https://min.io/pricing) before enabling compression with encryption to evaluate whether your specific workload is safe for this combination.
+</Warning>
+
+## Verify compression is working
+
+Upload an object and compare the reported size with the original:
+
+```sh
+mc cp /var/log/syslog myminio/my-bucket/syslog.log
+mc ls --recursive myminio/my-bucket/
+```
+
+The size shown by `mc ls` reflects the compressed on-disk size. If compression is working, the reported size will be smaller than the original file.

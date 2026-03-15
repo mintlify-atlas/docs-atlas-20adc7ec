@@ -1,0 +1,248 @@
+---
+title: "Webhook Notifications"
+description: "POST MinIO event notifications as JSON to any HTTP endpoint, with support for bearer token and mTLS authentication."
+---
+
+Webhook notifications let you receive MinIO events at any HTTP endpoint, making it easy to build custom event processing, trigger serverless functions, or integrate with any system that can accept HTTP POST requests.
+
+## How Webhook Notifications Work
+
+When a matching event occurs, MinIO serializes the event as a JSON payload and sends it via `HTTP POST` to the configured endpoint. The content type is `application/json`. MinIO expects a `2xx` HTTP status code to confirm delivery.
+
+## Enabling Webhook Notifications
+
+<Steps>
+  <Step title="Configure the webhook target">
+    ```bash
+    mc admin config set myminio notify_webhook:1 \
+      endpoint="https://my-app.example.com/minio-events"
+    ```
+  </Step>
+  <Step title="Restart MinIO">
+    ```bash
+    mc admin service restart myminio
+    ```
+  </Step>
+  <Step title="Subscribe a bucket to events">
+    ```bash
+    mc event add myminio/mybucket \
+      arn:minio:sqs::1:webhook \
+      --event "s3:ObjectCreated:*,s3:ObjectRemoved:*"
+    ```
+  </Step>
+  <Step title="Verify the configuration">
+    ```bash
+    mc event list myminio/mybucket
+    ```
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+All configuration keys are sourced from `internal/event/target/webhook.go`.
+
+| Key | Description |
+|:----|:------------|
+| `endpoint` | HTTP or HTTPS URL to receive events **(required)** |
+| `auth_token` | Bearer token for endpoint authentication |
+| `client_cert` | Path to TLS client certificate (for mTLS) |
+| `client_key` | Path to TLS client key (for mTLS) |
+| `queue_dir` | Persistent queue directory for undelivered events |
+| `queue_limit` | Maximum number of queued events |
+
+## Authentication
+
+<Tabs>
+  <Tab title="No Authentication">
+    ```bash
+    mc admin config set myminio notify_webhook:1 \
+      endpoint="https://my-app.example.com/minio-events"
+    ```
+  </Tab>
+  <Tab title="Bearer Token">
+    Set `auth_token` to a static token. MinIO sets the `Authorization` header as `Bearer <token>`.
+
+    If the token already contains a scheme prefix (e.g., `ApiKey abc123`), MinIO uses it verbatim.
+
+    ```bash
+    mc admin config set myminio notify_webhook:1 \
+      endpoint="https://my-app.example.com/minio-events" \
+      auth_token="mysecrettoken"
+    ```
+
+    The resulting request header:
+    ```
+    Authorization: Bearer mysecrettoken
+    ```
+  </Tab>
+  <Tab title="mTLS Client Certificate">
+    Provide `client_cert` and `client_key` together to enable mutual TLS authentication:
+
+    ```bash
+    mc admin config set myminio notify_webhook:1 \
+      endpoint="https://my-app.example.com/minio-events" \
+      client_cert="/etc/minio/webhook-client.crt" \
+      client_key="/etc/minio/webhook-client.key"
+    ```
+
+    MinIO reloads the certificate on `SIGHUP`, enabling certificate rotation without restart.
+  </Tab>
+</Tabs>
+
+## Environment Variable Configuration
+
+```bash
+export MINIO_NOTIFY_WEBHOOK_ENABLE_1=on
+export MINIO_NOTIFY_WEBHOOK_ENDPOINT_1=https://my-app.example.com/minio-events
+export MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_1=mysecrettoken
+export MINIO_NOTIFY_WEBHOOK_CLIENT_CERT_1=/etc/minio/webhook-client.crt
+export MINIO_NOTIFY_WEBHOOK_CLIENT_KEY_1=/etc/minio/webhook-client.key
+```
+
+## Webhook Payload Format
+
+Each POST contains a JSON body with the event log structure from `internal/event/event.go`:
+
+```json
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "mybucket/uploads/document.pdf",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "us-east-1",
+      "eventTime": "2024-01-15T10:30:00.000Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "minioadmin"
+      },
+      "requestParameters": {
+        "principalId": "minioadmin",
+        "region": "us-east-1",
+        "sourceIPAddress": "192.168.1.100"
+      },
+      "responseElements": {
+        "x-amz-request-id": "<request-id>",
+        "x-amz-id-2": "<node-id>",
+        "x-minio-origin-endpoint": "https://minio.example.com",
+        "x-minio-deployment-id": "<deployment-id>",
+        "content-length": "204800"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "Config",
+        "bucket": {
+          "name": "mybucket",
+          "ownerIdentity": { "principalId": "minioadmin" },
+          "arn": "arn:aws:s3:::mybucket"
+        },
+        "object": {
+          "key": "uploads/document.pdf",
+          "size": 204800,
+          "eTag": "d41d8cd98f00b204e9800998ecf8427e",
+          "contentType": "application/pdf",
+          "userMetadata": {
+            "X-Amz-Meta-Uploaded-By": "alice"
+          },
+          "sequencer": "17A2B3C4D5E6F"
+        }
+      },
+      "source": {
+        "host": "192.168.1.100",
+        "userAgent": "aws-cli/2.13.0"
+      }
+    }
+  ]
+}
+```
+
+## Retry Behavior
+
+MinIO does not perform automatic retries for webhook delivery. If the endpoint returns a non-2xx status or is unreachable, the event is considered failed.
+
+To handle transient failures, configure a persistent queue. MinIO will store undelivered events locally and retry delivery when the endpoint becomes reachable:
+
+```bash
+mc admin config set myminio notify_webhook:1 \
+  endpoint="https://my-app.example.com/minio-events" \
+  queue_dir="/var/minio/webhook-queue" \
+  queue_limit="10000"
+```
+
+The queue directory persists events to disk. Events are replayed in order once the endpoint is reachable again.
+
+<Warning>
+  If the endpoint returns `403 Forbidden`, MinIO logs a specific error message indicating that the `auth_token` may be incorrect. Check your token configuration if you see this error.
+</Warning>
+
+## Filtering Events
+
+```bash
+# Notify on all uploads to the documents/ prefix
+mc event add myminio/mybucket arn:minio:sqs::1:webhook \
+  --event "s3:ObjectCreated:Put" \
+  --prefix "documents/"
+
+# Notify on deletions of .log files
+mc event add myminio/mybucket arn:minio:sqs::1:webhook \
+  --event "s3:ObjectRemoved:Delete" \
+  --suffix ".log"
+```
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Serverless Triggers">
+    Trigger serverless functions (AWS Lambda, Knative, OpenFaaS) on object uploads or deletions.
+  </Card>
+  <Card title="Custom Event Processing">
+    Forward events to a custom service for business logic, alerting, or audit logging.
+  </Card>
+  <Card title="CI/CD Pipelines">
+    Trigger builds or deployments when artifacts are pushed to a MinIO bucket.
+  </Card>
+  <Card title="Audit and Compliance">
+    Stream all access and mutation events to a dedicated audit service for compliance reporting.
+  </Card>
+</CardGroup>
+
+## Implementing a Webhook Receiver
+
+Here is a minimal Go HTTP server that receives and logs MinIO webhook events:
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "log"
+    "net/http"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    var payload map[string]any
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+
+    log.Printf("MinIO event: EventName=%v Key=%v",
+        payload["EventName"],
+        payload["Key"],
+    )
+
+    w.WriteHeader(http.StatusOK)
+}
+
+func main() {
+    http.HandleFunc("/minio-events", handler)
+    log.Println("Listening on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```

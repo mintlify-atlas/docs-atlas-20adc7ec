@@ -1,0 +1,110 @@
+---
+title: "Introduction"
+description: "MinIO is a high-performance, S3-compatible object storage server built for cloud-native and on-premises deployments."
+---
+
+## What is MinIO?
+
+MinIO is an open-source, high-performance object storage server that is fully compatible with the Amazon S3 API. It is designed to handle unstructured data — including photos, videos, log files, backups, and container images — at any scale, from a single node to multi-petabyte distributed deployments.
+
+MinIO is written in Go and released under the GNU AGPLv3 license. It powers AI/ML pipelines, analytics workloads, and data-intensive applications requiring fast, reliable, and scalable storage.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get MinIO running in minutes with a single command
+  </Card>
+  <Card title="Install from Source" icon="code" href="/install/from-source">
+    Build and run MinIO directly from Go source
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/install/docker">
+    Run MinIO as a container with Docker or Podman
+  </Card>
+  <Card title="Kubernetes" icon="kubernetes" href="/install/kubernetes">
+    Deploy MinIO on Kubernetes with Helm charts
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="S3-Compatible API" icon="cloud">
+    Full Amazon S3 API compatibility — use any existing S3 SDK, tool, or application without code changes.
+  </Card>
+  <Card title="Erasure Coding" icon="shield">
+    Reed-Solomon erasure coding protects data across drives. Survive the loss of up to half your drives without data loss.
+  </Card>
+  <Card title="Distributed Mode" icon="server">
+    Scale horizontally across multiple nodes and drives for petabyte-scale storage with high availability.
+  </Card>
+  <Card title="BitRot Protection" icon="lock">
+    HighwayHash checksums detect and protect against silent data corruption at the object level.
+  </Card>
+  <Card title="Identity & Access Management" icon="users">
+    Built-in IAM with LDAP, OpenID Connect, and fine-grained bucket/object policies.
+  </Card>
+  <Card title="Server-Side Encryption" icon="key">
+    Object encryption with KMS integration (HashiCorp Vault, Thales, AWS KMS, and more).
+  </Card>
+  <Card title="Bucket Replication" icon="arrows-rotate">
+    Asynchronous replication between MinIO instances or to AWS S3 for disaster recovery and geo-distribution.
+  </Card>
+  <Card title="Lifecycle Management" icon="calendar">
+    Automated object expiration, tiering to warm/cold storage, and transition rules.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+MinIO's architecture is built around these core principles:
+
+- **Simplicity** — A single binary that runs as a server. No external metadata databases or coordinators required.
+- **Performance** — Designed to deliver the highest possible throughput for GET and PUT operations.
+- **Resilience** — Erasure coding and bitrot protection ensure data integrity even under hardware failures.
+- **S3 Compatibility** — Complete compatibility with the S3 API means zero application changes when switching to MinIO.
+
+<Info>
+MinIO community edition is distributed as source code only. Install using `go install github.com/minio/minio@latest` or build a Docker image from the provided Dockerfile.
+</Info>
+
+## Use Cases
+
+MinIO is commonly used for:
+
+- **AI/ML data lakes** — High-throughput storage for training datasets, model checkpoints, and inference outputs
+- **Application backup and restore** — Reliable object storage for backup pipelines
+- **Log and event data archival** — Cost-effective storage for long-term log retention
+- **Media storage** — Scalable storage for photos, video, and other rich media
+- **Database backups** — Target for database backup tools (Velero, pg_dump, etc.)
+- **Hybrid/multi-cloud** — Consistent S3 API across on-premises and cloud environments
+
+## Getting Started
+
+<Steps>
+  <Step title="Install MinIO">
+    Install from source using Go or pull the Docker image.
+    ```bash
+    go install github.com/minio/minio@latest
+    ```
+  </Step>
+  <Step title="Start the server">
+    Run the MinIO server pointing to a local directory.
+    ```bash
+    minio server /data --console-address :9001
+    ```
+  </Step>
+  <Step title="Access the Console">
+    Open `http://localhost:9000` in your browser and log in with the default credentials `minioadmin:minioadmin`.
+  </Step>
+  <Step title="Connect with mc">
+    Use the MinIO Client to interact with your server.
+    ```bash
+    mc alias set local http://localhost:9000 minioadmin minioadmin
+    mc mb local/my-bucket
+    mc cp myfile.txt local/my-bucket/
+    ```
+  </Step>
+</Steps>
+
+## License
+
+MinIO is released under the [GNU AGPLv3 license](https://github.com/minio/minio/blob/master/LICENSE). All commercial or proprietary usage must comply with AGPLv3 obligations, including releasing modifications back to the community.

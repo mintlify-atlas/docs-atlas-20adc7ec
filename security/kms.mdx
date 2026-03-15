@@ -1,0 +1,194 @@
+---
+title: "Key Management Service integration"
+description: "Integrate MinIO with KES and external KMS backends for SSE-S3 encryption key management."
+---
+
+MinIO uses a Key Management Service (KMS) to support SSE-S3 server-side encryption. The KMS generates and manages master keys (CMKs). MinIO requests a new data key from the KMS for each object upload and uses that key to protect the per-object encryption key.
+
+MinIO connects to any KMS through **KES** (Key Encryption Service), an open-source stateless proxy maintained by MinIO.
+
+```
+┌────────────┐
+│ ┌──────────┴─┬─────╮          ┌────────────┐
+└─┤ ┌──────────┴─┬───┴──────────┤ ┌──────────┴─┬─────────────────╮
+  └─┤ ┌──────────┴─┬─────┬──────┴─┤ KES Server ├─────────────────┤
+    └─┤   MinIO    ├─────╯        └────────────┘            ┌────┴────┐
+      └────────────┘                                        │   KMS   │
+                                                            └─────────┘
+```
+
+A typical deployment has `n` MinIO instances talking to `m` KES servers backed by a single central KMS.
+
+## Supported KMS backends
+
+| KMS | Use case |
+|---|---|
+| HashiCorp Vault | On-premises deployment (recommended for self-hosted) |
+| AWS KMS + SecretsManager | Cloud deployment with AWS-managed keys |
+| GCP Secret Manager | Cloud deployment with GCP-managed keys |
+| Gemalto KeySecure / Thales CipherTrust | On-premises hardware security module |
+| Filesystem (FS) | Local development and testing only — not for production |
+
+## Quick start with the KES playground
+
+MinIO operates a public KES instance at `https://play.min.io:7373` for experimentation.
+
+<Steps>
+  <Step title="Fetch the root identity">
+    ```bash
+    curl -sSL --tlsv1.2 \
+         -O 'https://raw.githubusercontent.com/minio/kes/master/root.key' \
+         -O 'https://raw.githubusercontent.com/minio/kes/master/root.cert'
+    ```
+  </Step>
+  <Step title="Set the KES environment variables">
+    ```bash
+    export MINIO_KMS_KES_ENDPOINT=https://play.min.io:7373
+    export MINIO_KMS_KES_KEY_FILE=root.key
+    export MINIO_KMS_KES_CERT_FILE=root.cert
+    export MINIO_KMS_KES_KEY_NAME=my-minio-key
+    ```
+  </Step>
+  <Step title="Start MinIO">
+    ```bash
+    export MINIO_ROOT_USER=minio
+    export MINIO_ROOT_PASSWORD=minio123
+    minio server ~/export
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The public KES playground at `https://play.min.io:7373` is for experimentation only. Anyone can access or delete master keys stored there. Always run your own KES instance in production.
+</Warning>
+
+## KES environment variables
+
+<ParamField path="MINIO_KMS_KES_ENDPOINT" type="url" required>
+  The KES server endpoint, e.g. `https://kes.example.com:7373`.
+</ParamField>
+
+<ParamField path="MINIO_KMS_KES_KEY_FILE" type="string" required>
+  Path to the client private key file used to authenticate MinIO to KES.
+</ParamField>
+
+<ParamField path="MINIO_KMS_KES_CERT_FILE" type="string" required>
+  Path to the client certificate file used to authenticate MinIO to KES.
+</ParamField>
+
+<ParamField path="MINIO_KMS_KES_KEY_NAME" type="string" required>
+  Name of the master key in KES that MinIO will use by default.
+</ParamField>
+
+<ParamField path="MINIO_KMS_KES_KEY_PASSWORD" type="string">
+  Password for the client private key if it is encrypted. MinIO supports encrypted private keys but not encrypted certificates.
+</ParamField>
+
+## Single-key mode (no external KMS)
+
+For deployments that do not need a full KMS, MinIO supports a static secret key that acts as a minimal KMS:
+
+```bash
+# Generate a 256-bit random key
+cat /dev/urandom | head -c 32 | base64 -
+# Example output: OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+
+export MINIO_KMS_SECRET_KEY=my-minio-key:OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+```
+
+The format is `<key-name>:<base64-encoded-256-bit-key>`.
+
+For distributed MinIO deployments, set the **same** `MINIO_KMS_SECRET_KEY` on every server process.
+
+<Warning>
+Losing the value of `MINIO_KMS_SECRET_KEY` causes permanent data loss because encrypted IAM and object data cannot be recovered without it.
+</Warning>
+
+### Migrating from single-key to full KES
+
+Import the existing key into KES, then replace the environment variable with the KES configuration:
+
+```bash
+kes key create my-minio-key OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+```
+
+## SSE-S3 vs SSE-C
+
+| Feature | SSE-S3 | SSE-C |
+|---|---|---|
+| Key management | KMS (KES) | Client |
+| Key stored on server | No (only encrypted data key) | Never |
+| Requires KMS config | Yes | No |
+| Requires TLS | No | Yes |
+| Auto-encryption support | Yes | No |
+| Key rotation via admin API | Yes | Via S3 COPY |
+
+## IAM and configuration data encryption
+
+MinIO also encrypts its own IAM and configuration data when a KMS is configured. Without a KMS, IAM data is stored in plaintext.
+
+You have three options:
+
+1. **No KMS** — IAM data stored in plaintext.
+2. **Single key** (`MINIO_KMS_SECRET_KEY`) — IAM data encrypted with the static key.
+3. **KES + external KMS** — IAM data encrypted with KMS-managed keys, centralized key management.
+
+## Auto-encryption
+
+Auto-encryption transparently applies SSE-S3 to every object written to a bucket.
+
+### Enable per bucket (recommended)
+
+```bash
+mc encrypt set sse-s3 myminio/my-bucket
+```
+
+Verify the setting:
+
+```bash
+mc encrypt info myminio/my-bucket
+# Auto encryption 'sse-s3' is enabled
+```
+
+### Enable globally via environment variable
+
+```bash
+export MINIO_KMS_AUTO_ENCRYPTION=on
+```
+
+<Note>
+Auto-encryption only applies to requests that do not already include S3 encryption headers. If a client sends SSE-C headers, MinIO uses the client-provided key instead and does not call the KMS.
+</Note>
+
+### Verify auto-encryption
+
+```bash
+mc cp test.file myminio/my-bucket/
+mc stat myminio/my-bucket/test.file
+# Encrypted:
+#   X-Amz-Server-Side-Encryption: AES256
+```
+
+## Key rotation
+
+MinIO supports SSE-S3 key rotation via the admin API. During rotation:
+
+1. MinIO reads the encrypted data key and master key ID from object metadata.
+2. MinIO asks the KMS to decrypt the data key using the current master key.
+3. MinIO requests a new data key from the KMS using the current `MINIO_KMS_KES_KEY_NAME`.
+4. MinIO re-encrypts the per-object key with a KEK derived from the new data key.
+5. MinIO stores the new encrypted data key and master key ID in object metadata.
+
+```bash
+mc admin kms key rotate myminio
+```
+
+Only the root / admin user can perform key rotation.
+
+## Secure erasure
+
+Because SSE-S3 encrypted objects can only be decrypted when the master key is available, you can implement secure erasure at the KMS layer:
+
+- **Seal the KMS** to make all SSE-S3 objects inaccessible until the KMS is unsealed.
+- **Seal one master key** to lock all objects protected by that key.
+- **Delete a master key** to permanently destroy all objects encrypted with it — this is a cryptographic wipe and is irreversible.

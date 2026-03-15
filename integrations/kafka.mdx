@@ -1,0 +1,241 @@
+---
+title: "Kafka Event Notifications"
+description: "Publish MinIO bucket event notifications to Apache Kafka topics, with support for TLS and SASL authentication."
+---
+
+MinIO can publish event notifications directly to Apache Kafka, making it straightforward to integrate object storage events into stream-processing pipelines, audit systems, or data engineering workflows.
+
+## Prerequisites
+
+- A running Apache Kafka cluster accessible from MinIO.
+- A Kafka topic to receive MinIO events.
+- MinIO `mc` client configured with an alias for your MinIO deployment.
+
+## Enabling Kafka Notifications
+
+<Steps>
+  <Step title="Configure the Kafka target">
+    Use `mc admin config set` to configure the Kafka notification target. Replace `1` with your target identifier.
+
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="kafka1.example.com:9092,kafka2.example.com:9092" \
+      topic="minio-events"
+    ```
+  </Step>
+  <Step title="Restart MinIO">
+    Apply the configuration by restarting the MinIO service.
+
+    ```bash
+    mc admin service restart myminio
+    ```
+  </Step>
+  <Step title="Subscribe a bucket to events">
+    Add an event subscription to the bucket, referencing the Kafka target ARN.
+
+    ```bash
+    mc event add myminio/mybucket \
+      arn:minio:sqs::1:kafka \
+      --event "s3:ObjectCreated:*,s3:ObjectRemoved:*"
+    ```
+  </Step>
+  <Step title="Verify the configuration">
+    ```bash
+    mc event list myminio/mybucket
+    ```
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+All configuration keys are sourced from `internal/event/target/kafka.go`.
+
+### Required Parameters
+
+| Key | Description |
+|:----|:------------|
+| `brokers` | Comma-separated list of Kafka broker addresses (`host:port`) |
+| `topic` | Kafka topic name to publish events to |
+
+### Optional Parameters
+
+| Key | Description |
+|:----|:------------|
+| `queue_dir` | Persistent queue directory for undelivered events |
+| `queue_limit` | Maximum number of events to queue (default: unlimited) |
+| `version` | Kafka protocol version (e.g., `2.6.0`) |
+| `batch_size` | Number of events to batch before publishing (requires `queue_dir`) |
+| `batch_commit_timeout` | Timeout for committing a batch (requires `queue_dir` and `batch_size > 1`) |
+| `compression_codec` | Compression: `none`, `gzip`, `snappy`, `lz4`, `zstd` |
+| `compression_level` | Codec-specific compression level |
+
+### TLS Parameters
+
+| Key | Description |
+|:----|:------------|
+| `tls` | Enable TLS for Kafka connection (`on`/`off`) |
+| `tls_skip_verify` | Skip TLS certificate verification (`on`/`off`) |
+| `tls_client_auth` | TLS client authentication type |
+| `client_tls_cert` | Path to TLS client certificate |
+| `client_tls_key` | Path to TLS client key |
+
+### SASL Authentication Parameters
+
+| Key | Description |
+|:----|:------------|
+| `sasl` | Enable SASL authentication (`on`/`off`) |
+| `sasl_username` | SASL username |
+| `sasl_password` | SASL password |
+| `sasl_mechanism` | SASL mechanism: `plain`, `sha256`, `sha512` |
+
+## Configuration Examples
+
+<Tabs>
+  <Tab title="Basic">
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="kafka.example.com:9092" \
+      topic="minio-events"
+    ```
+  </Tab>
+  <Tab title="TLS">
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="kafka.example.com:9093" \
+      topic="minio-events" \
+      tls="on" \
+      client_tls_cert="/etc/minio/kafka-client.crt" \
+      client_tls_key="/etc/minio/kafka-client.key"
+    ```
+  </Tab>
+  <Tab title="SASL/SCRAM">
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="kafka.example.com:9094" \
+      topic="minio-events" \
+      sasl="on" \
+      sasl_username="minio" \
+      sasl_password="secret" \
+      sasl_mechanism="sha256"
+    ```
+  </Tab>
+  <Tab title="With Queue">
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="kafka.example.com:9092" \
+      topic="minio-events" \
+      queue_dir="/tmp/minio-kafka-queue" \
+      queue_limit="10000" \
+      batch_size="100" \
+      batch_commit_timeout="5s"
+    ```
+  </Tab>
+</Tabs>
+
+## Environment Variable Configuration
+
+You can also configure the Kafka target using environment variables, which take precedence over stored configuration:
+
+```bash
+export MINIO_NOTIFY_KAFKA_ENABLE_1=on
+export MINIO_NOTIFY_KAFKA_BROKERS_1=kafka.example.com:9092
+export MINIO_NOTIFY_KAFKA_TOPIC_1=minio-events
+export MINIO_NOTIFY_KAFKA_SASL_1=on
+export MINIO_NOTIFY_KAFKA_SASL_USERNAME_1=minio
+export MINIO_NOTIFY_KAFKA_SASL_PASSWORD_1=secret
+export MINIO_NOTIFY_KAFKA_SASL_MECHANISM_1=sha256
+```
+
+## Kafka Message Format
+
+Each message published to Kafka is a JSON object with the following structure (from `internal/event/target/kafka.go`, `toProducerMessage`):
+
+```json
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "mybucket/images/photo.jpg",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "us-east-1",
+      "eventTime": "2024-01-15T10:30:00.000Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "userIdentity": { "principalId": "minioadmin" },
+      "requestParameters": { "sourceIPAddress": "127.0.0.1" },
+      "responseElements": {
+        "x-amz-request-id": "<id>",
+        "x-minio-origin-endpoint": "http://localhost:9000",
+        "x-minio-deployment-id": "<deployment-id>"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "Config",
+        "bucket": {
+          "name": "mybucket",
+          "arn": "arn:aws:s3:::mybucket"
+        },
+        "object": {
+          "key": "images/photo.jpg",
+          "size": 204800,
+          "eTag": "abc123...",
+          "sequencer": "<hex-timestamp>"
+        }
+      }
+    }
+  ]
+}
+```
+
+The Kafka message **key** is set to `<bucket>/<object>` (e.g., `mybucket/images/photo.jpg`), which allows Kafka partitioning by object key.
+
+## Filtering Events
+
+Filter events by type, object prefix, or suffix when subscribing a bucket:
+
+```bash
+# Only PUT events on objects under images/ with .jpg extension
+mc event add myminio/mybucket arn:minio:sqs::1:kafka \
+  --event "s3:ObjectCreated:Put" \
+  --prefix "images/" \
+  --suffix ".jpg"
+
+# All object creation and deletion events
+mc event add myminio/mybucket arn:minio:sqs::1:kafka \
+  --event "s3:ObjectCreated:*,s3:ObjectRemoved:*"
+```
+
+## Persistent Queue
+
+If the Kafka cluster is temporarily unavailable, MinIO can persist events to a local queue directory and replay them when the connection is restored.
+
+```bash
+mc admin config set myminio notify_kafka:1 \
+  brokers="kafka.example.com:9092" \
+  topic="minio-events" \
+  queue_dir="/var/minio/kafka-queue" \
+  queue_limit="50000"
+```
+
+<Warning>
+  `batch_size` and `batch_commit_timeout` can only be configured when `queue_dir` is set. Setting `batch_size > 1` without a `queue_dir` will cause a validation error at startup.
+</Warning>
+
+## Compression
+
+MinIO supports the following Kafka producer compression codecs:
+
+| Codec | Value |
+|:------|:------|
+| None | `none` |
+| Gzip | `gzip` |
+| Snappy | `snappy` |
+| LZ4 | `lz4` |
+| Zstandard | `zstd` |
+
+```bash
+mc admin config set myminio notify_kafka:1 \
+  brokers="kafka.example.com:9092" \
+  topic="minio-events" \
+  compression_codec="snappy"
+```

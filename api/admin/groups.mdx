@@ -1,0 +1,177 @@
+---
+title: "Group Management API"
+description: "Admin API endpoints for managing MinIO IAM groups and their members."
+---
+
+Groups let you attach a single policy to multiple users. Users inherit all policies attached to any group they belong to. All group management endpoints require root credentials or an IAM user with the appropriate admin action.
+
+<Info>
+Group management through these endpoints is only supported for internal MinIO users. When LDAP is enabled, group membership is managed by your directory server.
+</Info>
+
+## Update group members
+
+Add or remove members from a group. Groups are created implicitly when the first member is added.
+
+**`PUT /minio/admin/v3/update-group-members`**
+
+Requires: `admin:AddUserToGroup` admin action.
+
+<CodeGroup>
+
+```bash curl
+# Add users to a group
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/update-group-members" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"group": "developers", "members": ["alice", "bob"], "isRemove": false}'
+```
+
+```go madmin SDK
+// Add members
+err := adminClient.UpdateGroupMembers(context.Background(), madmin.GroupAddRemove{
+    Group:    "developers",
+    Members:  []string{"alice", "bob"},
+    IsRemove: false,
+})
+
+// Remove members
+err = adminClient.UpdateGroupMembers(context.Background(), madmin.GroupAddRemove{
+    Group:    "developers",
+    Members:  []string{"alice"},
+    IsRemove: true,
+})
+```
+
+</CodeGroup>
+
+<ParamField body="group" type="string" required>
+  Name of the group to update. The group is created if it does not already exist. Group names must not have leading or trailing spaces.
+</ParamField>
+
+<ParamField body="members" type="string[]" required>
+  List of user access keys to add or remove.
+</ParamField>
+
+<ParamField body="isRemove" type="boolean" required>
+  `false` to add members, `true` to remove members.
+</ParamField>
+
+**Response:** `200 OK` on success.
+
+---
+
+## List groups
+
+Return the names of all groups.
+
+**`GET /minio/admin/v3/groups`**
+
+Requires: `admin:ListGroups` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/groups" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+groups, err := adminClient.ListGroups(context.Background())
+for _, g := range groups {
+    fmt.Println(g)
+}
+```
+
+</CodeGroup>
+
+**Response body (JSON):** A JSON array of group name strings.
+
+```json
+["developers", "operators", "readonly"]
+```
+
+---
+
+## Get group info
+
+Return detailed information about a specific group.
+
+**`GET /minio/admin/v3/group?group={group}`**
+
+Requires: `admin:GetGroup` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/group?group=developers" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+info, err := adminClient.GetGroupDescription(context.Background(), "developers")
+fmt.Println(info.Name, info.Status, info.Members, info.Policy)
+```
+
+</CodeGroup>
+
+<ParamField query="group" type="string" required>
+  The name of the group to describe.
+</ParamField>
+
+**Response body (JSON):**
+
+<ResponseField name="name" type="string">
+  Group name.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `enabled` or `disabled`.
+</ResponseField>
+
+<ResponseField name="members" type="string[]">
+  List of user access keys in the group.
+</ResponseField>
+
+<ResponseField name="policy" type="string">
+  Comma-separated list of policies attached to the group.
+</ResponseField>
+
+---
+
+## Set group status
+
+Enable or disable a group. Disabling a group prevents all its members from exercising the group's policies.
+
+**`PUT /minio/admin/v3/set-group-status?group={group}&status={status}`**
+
+Requires: `admin:EnableGroup` or `admin:DisableGroup` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT \
+  "https://minio.example.com/minio/admin/v3/set-group-status?group=developers&status=disabled" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+err := adminClient.SetGroupStatus(context.Background(), "developers", madmin.GroupDisabled)
+```
+
+</CodeGroup>
+
+<ParamField query="group" type="string" required>
+  Name of the group.
+</ParamField>
+
+<ParamField query="status" type="string" required>
+  `enabled` to restore the group's policy effect, `disabled` to suspend it.
+</ParamField>
+
+**Response:** `200 OK` on success.

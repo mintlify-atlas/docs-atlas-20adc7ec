@@ -1,0 +1,238 @@
+---
+title: "S3 API Compatibility"
+description: "MinIO implements the Amazon S3 API, allowing any S3-compatible client or SDK to work without modification."
+---
+
+MinIO is fully compatible with the Amazon S3 API. Any application built for S3 works with MinIO by simply changing the endpoint URL — no code changes required.
+
+## Compatibility Level
+
+MinIO implements the complete Amazon S3 REST API, including all core object and bucket operations. Compatibility is verified continuously against the AWS S3 test suite. The vast majority of S3 workloads run on MinIO without modification.
+
+### Unsupported S3 APIs
+
+A small number of S3 APIs are intentionally not implemented because they are redundant or specific to AWS infrastructure:
+
+**Bucket APIs not supported:**
+- `BucketACL` — use [bucket policies](https://docs.min.io) instead
+- `BucketCORS` — CORS is enabled by default on all buckets for all HTTP verbs
+- `BucketWebsite` — use a reverse proxy such as `caddy` or `nginx`
+- `BucketAnalytics`, `BucketMetrics`, `BucketLogging` — use bucket notification APIs
+
+**Object APIs not supported:**
+- `ObjectACL` — use bucket policies instead
+
+## Supported S3 Operations
+
+<CardGroup cols={2}>
+  <Card title="Bucket Operations">
+    - `CreateBucket`
+    - `DeleteBucket`
+    - `HeadBucket`
+    - `ListBuckets`
+    - `GetBucketLocation`
+    - `GetBucketVersioning` / `PutBucketVersioning`
+    - `GetBucketPolicy` / `PutBucketPolicy` / `DeleteBucketPolicy`
+    - `GetBucketNotification` / `PutBucketNotification`
+    - `GetBucketReplication` / `PutBucketReplication`
+    - `GetBucketLifecycle` / `PutBucketLifecycle`
+    - `GetBucketEncryption` / `PutBucketEncryption`
+    - `GetBucketTagging` / `PutBucketTagging`
+    - `ListObjectsV2`
+  </Card>
+  <Card title="Object Operations">
+    - `GetObject`
+    - `PutObject`
+    - `HeadObject`
+    - `DeleteObject` / `DeleteObjects`
+    - `CopyObject`
+    - `GetObjectAttributes`
+    - `GetObjectRetention` / `PutObjectRetention`
+    - `GetObjectLegalHold` / `PutObjectLegalHold`
+    - `GetObjectTagging` / `PutObjectTagging`
+    - `CreateMultipartUpload`
+    - `UploadPart` / `CompleteMultipartUpload`
+    - `AbortMultipartUpload`
+    - `ListMultipartUploads`
+    - `ListParts`
+    - `SelectObjectContent`
+  </Card>
+</CardGroup>
+
+## S3 API Limits
+
+The following limits apply to the MinIO S3 API. These are sourced from `docs/minio-limits.md` in the repository.
+
+| Item | Specification |
+|:-----|:--------------|
+| Maximum object size | 50 TiB |
+| Maximum object size per PUT | 5 TiB |
+| Minimum object size | 0 B |
+| Maximum number of parts per multipart upload | 10,000 |
+| Part size range | 5 MiB to 5 TiB (last part can be 0 B to 5 TiB) |
+| Maximum parts returned per ListParts | 10,000 |
+| Maximum objects returned per ListObjects | 1,000 |
+| Maximum multipart uploads per ListMultipartUploads | 1,000 |
+| Maximum bucket name length | 63 characters |
+| Maximum object name length | 1,024 characters |
+| Maximum versions per object | 10,000 (configurable) |
+| Maximum buckets | Unlimited (500,000 recommended) |
+
+## Authentication
+
+MinIO supports both AWS Signature versions for authenticating S3 API requests.
+
+<Tabs>
+  <Tab title="Signature Version 4 (Recommended)">
+    AWS Signature Version 4 (`AWS4-HMAC-SHA256`) is the default and recommended authentication method. All modern AWS SDKs use SigV4 by default.
+
+    The Authorization header format is:
+    ```
+    AWS4-HMAC-SHA256 Credential=<AccessKey>/<date>/<region>/s3/aws4_request,
+    SignedHeaders=<headers>,
+    Signature=<hex_signature>
+    ```
+
+    MinIO also supports streaming SigV4 (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`) for chunked uploads.
+  </Tab>
+  <Tab title="Signature Version 2 (Legacy)">
+    AWS Signature Version 2 is supported for compatibility with older clients. New integrations should prefer SigV4.
+
+    ```
+    AWS <AccessKey>:<Base64(HMAC-SHA1(StringToSign, SecretKey))>
+    ```
+
+    <Warning>
+      SigV2 is considered legacy. Use SigV4 for all new applications.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Using AWS SDKs with MinIO
+
+To use any AWS SDK with MinIO, configure the endpoint to point to your MinIO server and set `path-style` addressing.
+
+<CodeGroup>
+```python Python (boto3)
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:9000",
+    aws_access_key_id="minioadmin",
+    aws_secret_access_key="minioadmin",
+    region_name="us-east-1",
+)
+```
+
+```go Go (aws-sdk-go-v2)
+package main
+
+import (
+    "context"
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/credentials"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+func main() {
+    cfg, _ := config.LoadDefaultConfig(context.TODO(),
+        config.WithRegion("us-east-1"),
+        config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+            "minioadmin", "minioadmin", "",
+        )),
+    )
+    client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+        o.BaseEndpoint = aws.String("http://localhost:9000")
+        o.UsePathStyle = true
+    })
+    _ = client
+}
+```
+
+```javascript JavaScript (aws-sdk v3)
+import { S3Client } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({
+  endpoint: "http://localhost:9000",
+  region: "us-east-1",
+  forcePathStyle: true,
+  credentials: {
+    accessKeyId: "minioadmin",
+    secretAccessKey: "minioadmin",
+  },
+});
+```
+</CodeGroup>
+
+<Note>
+  Always set `forcePathStyle` (or equivalent) to `true` when using AWS SDKs with MinIO. Virtual-hosted-style URLs are supported but path-style is the most portable option.
+</Note>
+
+## Presigned URLs
+
+MinIO supports S3 presigned URLs for temporary, credential-free access to objects. Presigned URLs are signed with AWS Signature Version 4.
+
+```go
+import (
+    "context"
+    "time"
+    "github.com/minio/minio-go/v7"
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+client, _ := minio.New("localhost:9000", &minio.Options{
+    Creds:  credentials.NewStaticV4("minioadmin", "minioadmin", ""),
+    Secure: false,
+})
+
+// Generate a presigned GET URL valid for 1 hour
+presignedURL, err := client.PresignedGetObject(
+    context.Background(),
+    "mybucket",
+    "myobject",
+    time.Hour,
+    nil,
+)
+```
+
+Presigned URLs can also be used for PUT operations, allowing clients to upload directly to MinIO without exposing credentials.
+
+## Multipart Upload
+
+MinIO supports S3 multipart upload for large objects. The multipart API allows objects larger than 5 GiB to be uploaded in parallel parts.
+
+<Steps>
+  <Step title="Initiate Upload">
+    Call `CreateMultipartUpload` to receive an `UploadId`.
+  </Step>
+  <Step title="Upload Parts">
+    Upload each part using `UploadPart`. Parts must be at least 5 MiB except for the final part. Up to 10,000 parts are supported.
+  </Step>
+  <Step title="Complete Upload">
+    Call `CompleteMultipartUpload` with the list of part numbers and ETags to assemble the final object.
+  </Step>
+  <Step title="Abort (Optional)">
+    Call `AbortMultipartUpload` to cancel an in-progress upload and free storage.
+  </Step>
+</Steps>
+
+## MinIO Extensions Beyond S3
+
+MinIO implements several capabilities beyond the standard S3 API:
+
+<CardGroup cols={2}>
+  <Card title="Admin API" href="/api/admin/overview">
+    A comprehensive `madmin` API for cluster administration: user management, server info, config, healing, and more.
+  </Card>
+  <Card title="Batch Jobs" href="/operations/lifecycle">
+    Run batch replication, expiration, and key-rotation jobs at scale using the batch job API.
+  </Card>
+  <Card title="Object Lambda" href="/protocols/object-lambda">
+    Transform objects on-the-fly during GET requests using webhook-based lambda functions.
+  </Card>
+  <Card title="Event Notifications" href="/integrations/overview">
+    Rich event notification targets including Kafka, Elasticsearch, webhook, MQTT, and more.
+  </Card>
+</CardGroup>

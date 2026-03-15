@@ -1,0 +1,165 @@
+---
+title: "AssumeRoleWithWebIdentity"
+description: "Exchange an OIDC or OAuth 2.0 JWT token for MinIO temporary credentials using the STS AssumeRoleWithWebIdentity action."
+---
+
+`AssumeRoleWithWebIdentity` allows clients authenticated by an external OpenID Connect (OIDC) identity provider to obtain temporary MinIO credentials. The caller presents a JWT ID token, which MinIO validates against a configured OIDC provider. On success, MinIO returns short-lived credentials whose permissions are governed by a policy mapped to the token's claims or role ARN.
+
+<Info>
+MinIO must have an OIDC identity provider configured before this action can be used. Configure OIDC via the `MINIO_IDENTITY_OPENID_*` environment variables or through the MinIO Console.
+</Info>
+
+## Request
+
+**`POST /`**
+
+```
+Content-Type: application/x-www-form-urlencoded
+```
+
+<Note>
+Unlike `AssumeRole`, this request does **not** require an `Authorization` header. Authentication is performed by validating the `WebIdentityToken` JWT.
+</Note>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://minio.example.com/ \
+  --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+  --data-urlencode "Version=2011-06-15" \
+  --data-urlencode "WebIdentityToken=<JWT_ID_TOKEN>" \
+  --data-urlencode "DurationSeconds=3600" \
+  --data-urlencode "RoleArn=arn:minio:iam:::role/my-role"
+```
+
+```go minio-go SDK
+import "github.com/minio/minio-go/v7/pkg/credentials"
+
+creds := credentials.NewSTSWebIdentity(
+    "https://minio.example.com",
+    func() (*credentials.WebIdentityToken, error) {
+        // Retrieve a fresh JWT from your identity provider
+        return &credentials.WebIdentityToken{
+            Token:   getJWTFromIDP(),
+            Expiry:  int(time.Until(tokenExpiry).Seconds()),
+        }, nil
+    },
+)
+
+minioClient, err := minio.New("minio.example.com", &minio.Options{
+    Creds: creds,
+})
+```
+
+</CodeGroup>
+
+## Request parameters
+
+<ParamField body="Action" type="string" required>
+  Must be `AssumeRoleWithWebIdentity`.
+</ParamField>
+
+<ParamField body="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField body="WebIdentityToken" type="string" required>
+  The JWT ID token issued by your OIDC provider. MinIO validates this token's signature, audience, and expiry against the configured provider.
+</ParamField>
+
+<ParamField body="RoleArn" type="string">
+  The ARN of a role configured on MinIO. When provided, the returned credentials use the policy associated with that role. When omitted, MinIO uses claim-based policy mapping from the JWT (the claim name is configurable via `MINIO_IDENTITY_OPENID_CLAIM_NAME`).
+</ParamField>
+
+<ParamField body="DurationSeconds" type="number">
+  Requested credential lifetime in seconds. The server may cap this to a configured maximum.
+</ParamField>
+
+<ParamField body="Policy" type="string">
+  An inline JSON session policy (max 2,048 characters) to further restrict the permissions granted by the role or claim-based policy.
+</ParamField>
+
+<ParamField body="WebIdentityAccessToken" type="string">
+  An OAuth 2.0 access token. Only used when `UserInfo` endpoint lookup is enabled in the OIDC configuration.
+</ParamField>
+
+## OIDC token validation
+
+MinIO validates the `WebIdentityToken` by:
+
+1. Fetching the OIDC provider's JWKS from its discovery endpoint.
+2. Verifying the token signature using the appropriate public key.
+3. Checking the `aud` (audience) claim matches the configured client ID.
+4. Checking the `exp` (expiry) claim has not passed.
+5. Extracting `sub` (subject) and `iss` (issuer) claims. These two values together form the stable parent user identity.
+
+<Warning>
+The `sub` claim is required in the JWT. Tokens without a `sub` claim are rejected.
+</Warning>
+
+## Policy resolution
+
+The policy applied to the returned credentials is determined in this order:
+
+1. **Role-based:** If `RoleArn` is provided and matches a configured MinIO role, the role's associated policy is used.
+2. **Claim-based:** If no `RoleArn` is provided, MinIO reads the policy name from a configurable JWT claim (default: `policy`). The named policy must exist in MinIO's IAM system.
+
+## Response
+
+HTTP `200 OK` with an XML body.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>TEMP_ACCESS_KEY</AccessKeyId>
+      <SecretAccessKey>TEMP_SECRET_KEY</SecretAccessKey>
+      <SessionToken>TEMP_SESSION_TOKEN</SessionToken>
+      <Expiration>2024-01-01T13:00:00Z</Expiration>
+    </Credentials>
+    <SubjectFromWebIdentityToken>user@example.com</SubjectFromWebIdentityToken>
+    <AssumedRoleUser>
+      <Arn></Arn>
+      <AssumeRoleId></AssumeRoleId>
+    </AssumedRoleUser>
+    <Provider>https://idp.example.com</Provider>
+    <Audience>minio-client</Audience>
+    <PackedPolicySize>0</PackedPolicySize>
+  </AssumeRoleWithWebIdentityResult>
+  <ResponseMetadata>
+    <RequestId>REQUEST_ID</RequestId>
+  </ResponseMetadata>
+</AssumeRoleWithWebIdentityResponse>
+```
+
+## Response fields
+
+<ResponseField name="Credentials" type="object" required>
+  Temporary security credentials.
+
+  <Expandable title="properties">
+    <ResponseField name="AccessKeyId" type="string">Temporary access key.</ResponseField>
+    <ResponseField name="SecretAccessKey" type="string">Temporary secret key.</ResponseField>
+    <ResponseField name="SessionToken" type="string">
+      Session token. Include as `x-amz-security-token` in every S3 API request made with these credentials.
+    </ResponseField>
+    <ResponseField name="Expiration" type="string">ISO 8601 UTC expiry timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="SubjectFromWebIdentityToken" type="string">
+  The `sub` claim from the JWT. Identifies the user within the OIDC provider.
+</ResponseField>
+
+<ResponseField name="Provider" type="string">
+  The `iss` (issuer) value from the token, identifying the OIDC provider.
+</ResponseField>
+
+<ResponseField name="Audience" type="string">
+  The `aud` (audience) claim from the token, typically the OAuth client ID.
+</ResponseField>
+
+<ResponseField name="PackedPolicySize" type="number">
+  Percentage of the session policy size limit used. Exceeding 100% causes the request to fail.
+</ResponseField>

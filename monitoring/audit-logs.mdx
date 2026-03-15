@@ -1,0 +1,272 @@
+---
+title: "Audit logging"
+description: "MinIO audit logs capture every S3 API request and response, including request metadata, response codes, and object location details."
+---
+
+Audit logs record a structured entry for every S3 API request MinIO processes. Unlike server logs (which record internal errors), audit logs are focused on request traceability and compliance. Each entry captures the full request and response context in JSON format.
+
+## What audit logs contain
+
+Each audit log entry includes the following top-level fields:
+
+| Field | Description |
+|---|---|
+| `version` | Audit log format version |
+| `deploymentid` | Unique identifier for the MinIO deployment |
+| `time` | Timestamp of the request (RFC 3339) |
+| `event` | Event type (empty string for standard API calls) |
+| `trigger` | What triggered the log entry (e.g., `incoming`) |
+| `api` | API call details: name, bucket, object, status, status code, bytes received/sent, response time |
+| `remotehost` | Client IP address |
+| `requestID` | Unique request identifier |
+| `userAgent` | HTTP User-Agent header from the client |
+| `requestPath` | Path portion of the request URL |
+| `requestHost` | Host header of the request |
+| `requestHeader` | Map of all request headers (includes Authorization) |
+| `responseHeader` | Map of all response headers |
+| `tags` | Additional metadata, including `objectLocation` for erasure-coded deployments |
+| `accessKey` | The access key used to authenticate the request |
+
+### The `api` object
+
+The `api` field captures per-request timing and S3 operation details:
+
+```json
+"api": {
+  "name": "PutObject",
+  "bucket": "testbucket",
+  "object": "hosts",
+  "status": "OK",
+  "statusCode": 200,
+  "rx": 401,
+  "tx": 0,
+  "timeToResponse": "13309747ns",
+  "timeToResponseInNS": "13309747"
+}
+```
+
+<Note>
+  `timeToResponse` and `timeToFirstByte` values are expressed in nanoseconds.
+</Note>
+
+### The `tags.objectLocation` field
+
+For erasure-coded deployments, the `tags` field includes `objectLocation` with the pool, set, and drives involved in the operation:
+
+```json
+"tags": {
+  "objectLocation": {
+    "name": "hosts",
+    "poolId": 1,
+    "setId": 1,
+    "drives": [
+      "/mnt/data1",
+      "/mnt/data2",
+      "/mnt/data3",
+      "/mnt/data4"
+    ]
+  }
+}
+```
+
+## Complete log entry example
+
+```json
+{
+  "version": "1",
+  "deploymentid": "90e81272-45d9-4fe8-9c45-c9a7322bf4b5",
+  "time": "2024-05-09T07:38:10.449688982Z",
+  "event": "",
+  "trigger": "incoming",
+  "api": {
+    "name": "PutObject",
+    "bucket": "testbucket",
+    "object": "hosts",
+    "status": "OK",
+    "statusCode": 200,
+    "rx": 401,
+    "tx": 0,
+    "timeToResponse": "13309747ns",
+    "timeToResponseInNS": "13309747"
+  },
+  "remotehost": "127.0.0.1",
+  "requestID": "17CDC1F4D7E69123",
+  "userAgent": "MinIO (linux; amd64) minio-go/v7.0.70 mc/RELEASE.2024-04-30T17-44-48Z",
+  "requestPath": "/testbucket/hosts",
+  "requestHost": "localhost:9000",
+  "requestHeader": {
+    "Content-Length": "401",
+    "Content-Type": "application/octet-stream",
+    "X-Amz-Content-Sha256": "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
+    "X-Amz-Date": "20240509T073810Z",
+    "X-Amz-Decoded-Content-Length": "228"
+  },
+  "responseHeader": {
+    "Content-Length": "0",
+    "ETag": "9fe7a344ef4227d3e53751e9d88ce41e",
+    "Server": "MinIO",
+    "X-Amz-Request-Id": "17CDC1F4D7E69123"
+  },
+  "tags": {
+    "objectLocation": {
+      "name": "hosts",
+      "poolId": 1,
+      "setId": 1,
+      "drives": ["/mnt/data1", "/mnt/data2", "/mnt/data3", "/mnt/data4"]
+    }
+  },
+  "accessKey": "minioadmin"
+}
+```
+
+## Audit log targets
+
+Audit logs can be delivered to HTTP webhook endpoints and Kafka topics. Both target types are disabled by default and are independent of the server error log targets.
+
+### HTTP webhook target
+
+<Steps>
+  <Step title="View the current configuration">
+    ```bash
+    mc admin config get myminio/ audit_webhook
+    # audit_webhook:name1 enable=off endpoint= auth_token= client_cert= client_key=
+    ```
+  </Step>
+
+  <Step title="Set the webhook endpoint">
+    ```bash
+    mc admin config set myminio audit_webhook:name1 \
+      auth_token="" \
+      endpoint="http://audit-collector:8080/minio/audit"
+    ```
+  </Step>
+
+  <Step title="Restart MinIO">
+    ```bash
+    mc admin service restart myminio
+    ```
+  </Step>
+</Steps>
+
+**Configure with environment variables:**
+
+```bash
+export MINIO_AUDIT_WEBHOOK_ENABLE_target1="on"
+export MINIO_AUDIT_WEBHOOK_AUTH_TOKEN_target1="token"
+export MINIO_AUDIT_WEBHOOK_ENDPOINT_target1="http://localhost:8080/minio/audit"
+export MINIO_AUDIT_WEBHOOK_CLIENT_CERT="/tmp/cert.pem"
+export MINIO_AUDIT_WEBHOOK_CLIENT_KEY="/tmp/key.pem"
+minio server /mnt/data
+```
+
+The `CLIENT_CERT` and `CLIENT_KEY` variables enable mutual TLS (mTLS) authentication to the webhook endpoint.
+
+### Kafka audit target
+
+MinIO can deliver audit logs directly to a Kafka topic.
+
+<Steps>
+  <Step title="View available Kafka configuration parameters">
+    ```bash
+    mc admin config set myminio/ audit_kafka
+    ```
+
+    The available parameters are:
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `brokers` | csv | Comma-separated list of Kafka broker addresses (required) |
+    | `topic` | string | Kafka topic for audit log messages |
+    | `sasl_username` | string | Username for SASL/PLAIN or SASL/SCRAM auth |
+    | `sasl_password` | string | Password for SASL/PLAIN or SASL/SCRAM auth |
+    | `sasl_mechanism` | string | SASL mechanism (`plain` by default) |
+    | `sasl` | on/off | Enable SASL authentication |
+    | `tls` | on/off | Enable TLS |
+    | `tls_skip_verify` | on/off | Skip TLS certificate verification |
+    | `client_tls_cert` | path | Path to client certificate for mTLS |
+    | `client_tls_key` | path | Path to client key for mTLS |
+    | `version` | string | Kafka cluster version |
+  </Step>
+
+  <Step title="Configure the Kafka target">
+    ```bash
+    mc admin config set myminio/ audit_kafka:target1 \
+      brokers=localhost:29092 \
+      topic=auditlog
+    mc admin service restart myminio/
+    ```
+  </Step>
+
+  <Step title="Verify messages are arriving">
+    ```bash
+    kafkacat -b localhost:29092 -t auditlog -C
+    ```
+
+    Each message is a single JSON audit log entry on one line.
+  </Step>
+</Steps>
+
+**Configure the Kafka target with environment variables:**
+
+```bash
+export MINIO_AUDIT_KAFKA_ENABLE_target1="on"
+export MINIO_AUDIT_KAFKA_BROKERS_target1="localhost:29092"
+export MINIO_AUDIT_KAFKA_TOPIC_target1="auditlog"
+minio server /mnt/data
+```
+
+## Monitoring audit target health
+
+MinIO exposes metrics for each audit target at the `/minio/metrics/v3/audit` endpoint (v3) under the `minio_audit_` prefix:
+
+| Metric | Description |
+|---|---|
+| `minio_audit_failed_messages` | Total number of audit messages that failed to send since server start |
+| `minio_audit_target_queue_length` | Number of unsent audit messages currently in the queue |
+| `minio_audit_total_messages` | Total number of audit messages sent since server start |
+
+All three metrics include a `target_id` label identifying the named audit target.
+
+## Testing audit log delivery
+
+MinIO ships a small Go tool in the repository (`docs/auditlog/auditlog-echo.go`) that listens on an HTTP port and prints received audit log entries to the console. This is useful for verifying your configuration:
+
+```bash
+# Start the echo server (default port 8080)
+go run docs/auditlog/auditlog-echo.go
+
+# Configure MinIO to send audit logs to it
+mc admin config set myminio audit_webhook enable=on endpoint=http://localhost:8080
+
+# Make any S3 request and watch the echo server output
+mc cp myfile myminio/mybucket/
+```
+
+## Multiple audit targets
+
+You can configure several independent audit targets by using different names:
+
+```bash
+# Webhook target for SIEM
+mc admin config set myminio audit_webhook:siem \
+  endpoint="https://siem.example.com/api/ingest"
+
+# Kafka target for log aggregation
+mc admin config set myminio/ audit_kafka:aggregator \
+  brokers=kafka1:9092,kafka2:9092 \
+  topic=minio-audit
+
+mc admin service restart myminio
+```
+
+<AccordionGroup>
+  <Accordion title="What is the difference between audit logs and server logs?">
+    Server logs (configured with `logger_webhook`) record internal MinIO errors, warnings, and system events. Audit logs (configured with `audit_webhook` or `audit_kafka`) record every S3 API request and its outcome, including the access key, request headers, and response headers. Use audit logs for compliance and access tracing; use server logs for operational monitoring and debugging.
+  </Accordion>
+  <Accordion title="Are audit logs written for all S3 operations?">
+    Yes. MinIO generates an audit log entry for every S3 API request it processes, regardless of whether the request succeeded or failed. The `api.statusCode` field in each entry reflects the HTTP response code.
+  </Accordion>
+  <Accordion title="Can I filter which events appear in audit logs?">
+    MinIO does not currently support server-side filtering of audit log events by operation type. All API calls are logged to all configured targets. Filtering can be applied downstream in your log collector, SIEM, or stream processing pipeline using the `api.name` field.
+  </Accordion>
+</AccordionGroup>

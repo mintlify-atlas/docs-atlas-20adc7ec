@@ -1,0 +1,144 @@
+---
+title: "Docker deployment"
+description: "Build and run MinIO as a Docker or Podman container."
+---
+
+MinIO provides a `Dockerfile` in the repository root for building a local container image. This page covers building the image, running it with persistent storage, and configuring it with environment variables.
+
+<Note>
+  The Dockerfile uses the official `minio/minio:latest` base image and copies your locally compiled binary into it. You must [build the MinIO binary first](/install/from-source) before building the Docker image.
+</Note>
+
+## Build the image
+
+<Steps>
+  <Step title="Build the MinIO binary">
+    The Dockerfile expects a compiled `minio` binary in the project root. Follow [Install from source](/install/from-source) to produce it, then confirm it exists:
+
+    ```sh
+    ls -lh minio
+    ```
+  </Step>
+
+  <Step title="Build the Docker image">
+    From the project root, build and tag the image:
+
+    ```sh
+    docker build -t myminio:minio .
+    ```
+
+    Confirm the image was created:
+
+    ```sh
+    docker image ls
+    ```
+  </Step>
+</Steps>
+
+## Run the container
+
+### Minimal run (ephemeral storage)
+
+This starts MinIO with storage inside the container. Data is lost when the container stops:
+
+```sh
+docker run -p 9000:9000 -p 9001:9001 myminio:minio server /tmp/minio --console-address :9001
+```
+
+| Flag | Description |
+|------|-------------|
+| `-p 9000:9000` | Expose the S3 API port |
+| `-p 9001:9001` | Expose the web console port |
+| `server /tmp/minio` | Storage path inside the container |
+| `--console-address :9001` | Pin console to port 9001 |
+
+### Run with persistent storage
+
+Mount a host directory so data survives container restarts:
+
+```sh
+docker run \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -v /mnt/data:/data \
+  myminio:minio server /data --console-address :9001
+```
+
+The `Dockerfile` declares `/data` as the default `VOLUME`, so mounting to `/data` is the canonical path.
+
+### Multi-drive erasure coding
+
+For erasure coding across multiple drives, mount each drive separately:
+
+```sh
+podman run \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  --name minio \
+  -v /mnt/data1:/data1 \
+  -v /mnt/data2:/data2 \
+  -v /mnt/data3:/data3 \
+  -v /mnt/data4:/data4 \
+  -v /mnt/data5:/data5 \
+  -v /mnt/data6:/data6 \
+  -v /mnt/data7:/data7 \
+  -v /mnt/data8:/data8 \
+  quay.io/minio/minio server /data{1...8} --console-address ":9001"
+```
+
+<Note>
+  The `{1...8}` ellipsis notation requires three dots and is interpreted by MinIO (not the shell). Pass it as a quoted argument when using shell expansion might interfere.
+</Note>
+
+## Environment variable configuration
+
+Set root credentials and other options via environment variables using the `-e` flag:
+
+```sh
+docker run \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e MINIO_ROOT_USER=myaccesskey \
+  -e MINIO_ROOT_PASSWORD=mysecretkey \
+  -v /mnt/data:/data \
+  myminio:minio server /data --console-address :9001
+```
+
+### Key environment variables
+
+| Variable | Description | Default |
+|----------|-------------|----------|
+| `MINIO_ROOT_USER` | Root access key (username) | `minioadmin` |
+| `MINIO_ROOT_PASSWORD` | Root secret key (password) | `minioadmin` |
+| `MINIO_ADDRESS` | Bind address for the S3 API | `:9000` |
+| `MINIO_CONSOLE_ADDRESS` | Bind address for the web console | random port |
+| `MINIO_STORAGE_CLASS_STANDARD` | Standard storage class parity (e.g. `EC:4`) | varies |
+| `MINIO_STORAGE_CLASS_RRS` | Reduced redundancy parity (e.g. `EC:2`) | `EC:1` |
+
+<Warning>
+  Always set `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` to non-default values before exposing the container to any network.
+</Warning>
+
+## Customizing the entrypoint
+
+The container uses `dockerscripts/docker-entrypoint.sh` as its entrypoint. Modify this file before building the image to inject custom startup logic, environment configuration, or health checks.
+
+## Verify the deployment
+
+```sh
+mc alias set local http://localhost:9000 myaccesskey mysecretkey
+mc admin info local
+```
+
+Or open [http://127.0.0.1:9000](http://127.0.0.1:9000) in your browser.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes" icon="server" href="/install/kubernetes">
+    Deploy MinIO on Kubernetes with Helm or the Operator.
+  </Card>
+  <Card title="Erasure coding" icon="shield" href="/architecture/erasure-coding">
+    Configure data and parity drives for fault tolerance.
+  </Card>
+</CardGroup>

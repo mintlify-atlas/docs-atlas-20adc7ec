@@ -1,0 +1,113 @@
+---
+title: "Server logging"
+description: "MinIO supports console and HTTP webhook log targets for server error and event logs in JSON format."
+---
+
+MinIO server logs record internal errors, warnings, and system events. Logs can be sent to the console (stdout) and to one or more HTTP webhook endpoints. All log output is in JSON format.
+
+## Log targets
+
+MinIO currently supports two log target types:
+
+| Target | Always on | Configuration |
+|---|---|---|
+| Console | Yes — cannot be disabled | None required |
+| HTTP webhook | No — disabled by default | `mc admin config set logger_webhook` |
+
+## Console target
+
+The console target is always active. Log lines are written to stdout in JSON format. When running MinIO in a container or under a process manager, capture stdout to collect these logs.
+
+## HTTP webhook target
+
+The webhook target POSTs log entries as JSON to an HTTP endpoint. You can configure multiple named webhook targets simultaneously.
+
+### Configure with mc
+
+<Steps>
+  <Step title="View the current configuration">
+    ```bash
+    mc admin config get myminio/ logger_webhook
+    # logger_webhook:name1 auth_token="" endpoint=""
+    ```
+  </Step>
+
+  <Step title="Set the webhook endpoint">
+    ```bash
+    mc admin config set myminio logger_webhook:name1 \
+      auth_token="" \
+      endpoint="http://log-collector:8080/minio/logs"
+    ```
+
+    Replace `http://log-collector:8080/minio/logs` with your actual log collector endpoint.
+  </Step>
+
+  <Step title="Restart MinIO to apply the change">
+    ```bash
+    mc admin service restart myminio
+    ```
+  </Step>
+</Steps>
+
+### Configure with environment variables
+
+Environment variables override the server configuration and take effect on startup:
+
+```bash
+export MINIO_LOGGER_WEBHOOK_ENABLE_target1="on"
+export MINIO_LOGGER_WEBHOOK_AUTH_TOKEN_target1="token"
+export MINIO_LOGGER_WEBHOOK_ENDPOINT_target1="http://localhost:8080/minio/logs"
+minio server /mnt/data
+```
+
+Suffix the variable names with a target identifier (e.g., `_target1`) to configure multiple webhook targets.
+
+<Note>
+  Setting these environment variables automatically enables the webhook target. You do not need to call `mc admin service restart` when using environment variables.
+</Note>
+
+## Kafka log target
+
+MinIO also supports sending server logs to a Kafka topic. Configure this with the `logger_webhook` settings or via a dedicated Kafka logger configuration. Refer to the audit log Kafka target configuration for the same set of Kafka connection parameters (brokers, topic, SASL, TLS).
+
+## Log format
+
+All logs are emitted as JSON objects. Each log entry includes fields such as the deployment ID, timestamp, log level, error information, and trace context. Log data from the webhook target is sent via HTTP POST with `Content-Type: application/json`.
+
+## Monitoring webhook health
+
+MinIO tracks the health of each logger webhook target and exposes metrics at the `/minio/metrics/v3/logger/webhook` endpoint (v3) under the `minio_logger_webhook_` prefix:
+
+| Metric | Description |
+|---|---|
+| `minio_logger_webhook_failed_messages` | Total number of log messages that failed to send since server start |
+| `minio_logger_webhook_queue_length` | Number of unsent messages currently in the queue for the target |
+| `minio_logger_webhook_total_messages` | Total number of log messages sent since server start |
+
+These metrics include a `target_id` label identifying which named webhook target the metric applies to.
+
+```bash
+# Check logger webhook metrics (v3 endpoint)
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:9000/minio/metrics/v3/logger/webhook
+```
+
+## Multiple targets
+
+You can configure multiple independent webhook targets by using different names:
+
+```bash
+# First webhook target
+mc admin config set myminio logger_webhook:prod \
+  endpoint="http://prod-log-collector:8080/logs"
+
+# Second webhook target  
+mc admin config set myminio logger_webhook:debug \
+  endpoint="http://debug-log-collector:9090/logs"
+
+mc admin service restart myminio
+```
+
+<Tip>
+  Use named targets to fan out logs to multiple consumers — for example, one target for your SIEM and another for a local log aggregator.
+</Tip>

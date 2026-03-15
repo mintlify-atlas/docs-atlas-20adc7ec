@@ -1,0 +1,161 @@
+---
+title: "Storage classes"
+description: "Configure per-object parity levels using STANDARD and REDUCED_REDUNDANCY storage classes."
+---
+
+MinIO supports two storage classes that let you tune the trade-off between redundancy and usable capacity on a per-object basis. Storage class is set at upload time via the `x-amz-storage-class` request header — the same header used by Amazon S3.
+
+## Overview
+
+| Storage class | Environment variable | Default parity |
+|---------------|---------------------|----------------|
+| `STANDARD` | `MINIO_STORAGE_CLASS_STANDARD` | Depends on erasure set size (see below) |
+| `REDUCED_REDUNDANCY` | `MINIO_STORAGE_CLASS_RRS` | `EC:1` |
+
+Both classes use the **EC:N** notation, where `N` is the number of parity shards.
+
+## Default parity by erasure set size
+
+When no storage class environment variable is set, MinIO chooses a default parity based on the erasure set size:
+
+| Erasure set size | Default parity (STANDARD) |
+|-----------------|---------------------------|
+| 5 or fewer      | EC:2                      |
+| 6–7             | EC:3                      |
+| 8 or more       | EC:4                      |
+
+Default `REDUCED_REDUNDANCY` parity is always `EC:1`.
+
+## Configuring storage classes
+
+Set the environment variables before starting MinIO:
+
+```sh
+export MINIO_STORAGE_CLASS_STANDARD=EC:4
+export MINIO_STORAGE_CLASS_RRS=EC:2
+minio server /data{1...16} --console-address :9001
+```
+
+Or with Docker:
+
+```sh
+docker run \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e MINIO_STORAGE_CLASS_STANDARD=EC:4 \
+  -e MINIO_STORAGE_CLASS_RRS=EC:2 \
+  -v /mnt/data:/data \
+  myminio:minio server /data --console-address :9001
+```
+
+### Constraints
+
+- `STANDARD` parity must be **≥ 2** if `REDUCED_REDUNDANCY` parity is not set
+- `STANDARD` parity must be **greater than** `REDUCED_REDUNDANCY` parity when both are set
+- Parity cannot exceed `N/2` (parity blocks cannot outnumber data blocks)
+
+<Warning>
+  If `STANDARD` storage class is set and an upload request does not include `x-amz-storage-class`, MinIO applies `STANDARD` parity automatically. Make sure the configured parity is intentional for all objects.
+</Warning>
+
+## Storage usage impact
+
+Higher parity means more redundancy but also higher disk usage. The approximate storage usage ratio is:
+
+```
+storage_usage_ratio = total_drives (N) / data_drives (D)
+```
+
+For a 16-drive deployment:
+
+| Data drives (D) | Parity drives (P) | Storage usage ratio |
+|-----------------|-------------------|-----------------------|
+| 8               | 8 (EC:8)          | 2.00×                 |
+| 10              | 6 (EC:6)          | 1.60×                 |
+| 12              | 4 (EC:4)          | 1.34×                 |
+| 13              | 3 (EC:3)          | 1.23×                 |
+| 14              | 2 (EC:2)          | 1.14×                 |
+
+**Example:** A 100 MiB file stored with EC:4 on a 16-drive deployment uses approximately 134 MiB of total disk space.
+
+## Setting storage class per object
+
+Upload an object with a specific storage class using the `mc` client:
+
+```sh
+mc cp --storage-class REDUCED_REDUNDANCY myfile.bin local/my-bucket/
+```
+
+Or from application code using the `minio-go` SDK:
+
+```go
+s3Client, err := minio.New("localhost:9000", "YOUR-ACCESSKEYID", "YOUR-SECRETACCESSKEY", true)
+if err != nil {
+    log.Fatalln(err)
+}
+
+object, err := os.Open("my-testfile")
+if err != nil {
+    log.Fatalln(err)
+}
+defer object.Close()
+objectStat, err := object.Stat()
+if err != nil {
+    log.Fatalln(err)
+}
+
+n, err := s3Client.PutObject(
+    "my-bucketname",
+    "my-objectname",
+    object,
+    objectStat.Size(),
+    minio.PutObjectOptions{
+        ContentType:  "application/octet-stream",
+        StorageClass: "REDUCED_REDUNDANCY",
+    },
+)
+if err != nil {
+    log.Fatalln(err)
+}
+log.Println("Uploaded", "my-objectname", "of size:", n, "Successfully.")
+```
+
+## Configuring via mc admin config
+
+Storage class can also be set after the server is running using `mc admin config`:
+
+```sh
+mc admin config set local/ storage_class standard=EC:4 rrs=EC:2
+mc admin config get local/ storage_class
+```
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="What happens if I don't set any storage class environment variable?">
+    MinIO uses the default parity for the erasure set size: EC:2 for sets of 5 or fewer drives, EC:3 for sets of 6–7 drives, and EC:4 for sets of 8 or more drives. Uploads that include `x-amz-storage-class: REDUCED_REDUNDANCY` will use a parity of EC:1.
+  </Accordion>
+
+  <Accordion title="Can I mix storage classes within the same bucket?">
+    Yes. Storage class is a per-object attribute set at upload time. Different objects in the same bucket can use different storage classes and therefore different parity counts.
+  </Accordion>
+
+  <Accordion title="Can I change the storage class of an existing object?">
+    No. Storage class is fixed at upload time. To change the parity of an existing object, you must re-upload it with the desired `x-amz-storage-class` header.
+  </Accordion>
+
+  <Accordion title="What is the minimum number of drives required to use REDUCED_REDUNDANCY?">
+    The minimum is 2 drives total (the minimum for any erasure coding). With 2 drives, parity is limited to EC:1.
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Erasure coding" icon="shield" href="/architecture/erasure-coding">
+    How Reed-Solomon sharding and parity work under the hood.
+  </Card>
+  <Card title="Distributed mode" icon="network" href="/architecture/distributed-mode">
+    Multi-node setup and erasure set formation.
+  </Card>
+</CardGroup>

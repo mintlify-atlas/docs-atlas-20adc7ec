@@ -1,0 +1,116 @@
+---
+title: "STS API Overview"
+description: "Overview of the MinIO Security Token Service (STS) API for issuing temporary credentials."
+---
+
+The MinIO Security Token Service (STS) API issues short-lived temporary credentials. Clients use these credentials to make S3 API calls without long-term access keys. MinIO implements a subset of the AWS STS API, plus several MinIO-specific extensions.
+
+## STS API version
+
+All STS requests must include `Version=2011-06-15`.
+
+## Endpoint
+
+All STS requests are sent as HTTP POST to the root endpoint:
+
+```
+POST /
+Content-Type: application/x-www-form-urlencoded
+```
+
+The `Action` form parameter determines which STS operation is invoked.
+
+## Available actions
+
+<Columns cols={2}>
+  <Card title="AssumeRole" icon="key" href="/api/sts/assume-role">
+    Exchange IAM user credentials for short-lived tokens. For internal MinIO users authenticated with AWS Signature V4.
+  </Card>
+  <Card title="AssumeRoleWithWebIdentity" icon="globe" href="/api/sts/web-identity">
+    Exchange an OIDC JWT token for MinIO credentials. Used with external identity providers like Keycloak or Okta.
+  </Card>
+</Columns>
+
+Additional actions supported by MinIO:
+
+| Action | Description |
+|---|---|
+| `AssumeRoleWithLDAPIdentity` | Exchange LDAP username and password for temporary credentials. |
+| `AssumeRoleWithClientGrants` | Exchange an OAuth 2.0 client-credentials JWT for temporary credentials. |
+| `AssumeRoleWithCertificate` | Exchange a client TLS certificate for temporary credentials. |
+| `AssumeRoleWithCustomToken` | Exchange a token validated by an external auth plugin. |
+
+## Common request parameters
+
+<ParamField body="Action" type="string" required>
+  The STS action to invoke. See the table above.
+</ParamField>
+
+<ParamField body="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField body="DurationSeconds" type="number">
+  Requested lifetime for the returned credentials in seconds. The minimum and maximum values depend on the action and server configuration.
+</ParamField>
+
+<ParamField body="Policy" type="string">
+  A JSON session policy to further restrict the permissions of the returned credentials. The policy cannot exceed 2,048 characters.
+</ParamField>
+
+## Common response structure
+
+All successful STS responses are XML documents with the following structure:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <Credentials>
+      <AccessKeyId>TEMPORARY_ACCESS_KEY</AccessKeyId>
+      <SecretAccessKey>TEMPORARY_SECRET_KEY</SecretAccessKey>
+      <SessionToken>SESSION_TOKEN</SessionToken>
+      <Expiration>2024-01-01T12:00:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleResult>
+  <ResponseMetadata>
+    <RequestId>REQUEST_ID</RequestId>
+  </ResponseMetadata>
+</AssumeRoleResponse>
+```
+
+<ResponseField name="Credentials.AccessKeyId" type="string">
+  The temporary access key.
+</ResponseField>
+
+<ResponseField name="Credentials.SecretAccessKey" type="string">
+  The temporary secret key.
+</ResponseField>
+
+<ResponseField name="Credentials.SessionToken" type="string">
+  The session token. Must be passed as the `x-amz-security-token` header (or `X-Amz-Security-Token` query parameter) in subsequent S3 API requests.
+</ResponseField>
+
+<ResponseField name="Credentials.Expiration" type="string">
+  ISO 8601 timestamp when the credentials expire.
+</ResponseField>
+
+## Error responses
+
+STS errors are returned as XML:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ErrorResponse>
+  <Error>
+    <Type>Sender</Type>
+    <Code>AccessDenied</Code>
+    <Message>Access denied.</Message>
+  </Error>
+  <RequestId>REQUEST_ID</RequestId>
+</ErrorResponse>
+```
+
+<Note>
+Temporary credentials and service accounts cannot generate further temporary credentials via `AssumeRole`. Only permanent IAM users may call `AssumeRole`.
+</Note>

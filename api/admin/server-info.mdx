@@ -1,0 +1,214 @@
+---
+title: "Server Info and Metrics API"
+description: "Admin API endpoints for retrieving MinIO server information, storage statistics, data usage, and real-time metrics."
+---
+
+These endpoints provide observability into MinIO server state, storage layout, data usage, and live performance metrics. All endpoints require root credentials or an IAM user with the appropriate admin action.
+
+## Server info
+
+Return a comprehensive summary of the MinIO cluster including version, uptime, disk state, and network topology.
+
+**`GET /minio/admin/v3/info`**
+
+Requires: `admin:ServerInfo` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/info" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```bash mc CLI
+mc admin info myminio
+```
+
+```go madmin SDK
+info, err := adminClient.ServerInfo(context.Background())
+fmt.Println(info.Mode, info.Region, info.DeploymentID)
+```
+
+</CodeGroup>
+
+**Response body (JSON):**
+
+<ResponseField name="mode" type="string">
+  Deployment mode, e.g. `standalone` or `distributed`.
+</ResponseField>
+
+<ResponseField name="region" type="string">
+  Configured server region.
+</ResponseField>
+
+<ResponseField name="deploymentID" type="string">
+  Unique identifier for this MinIO deployment.
+</ResponseField>
+
+<ResponseField name="buckets" type="object">
+  <Expandable title="properties">
+    <ResponseField name="count" type="number">Total number of buckets.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="objects" type="object">
+  <Expandable title="properties">
+    <ResponseField name="count" type="number">Total number of objects.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="servers" type="object[]">
+  Per-server details including endpoint, uptime, version, and disk health.
+</ResponseField>
+
+---
+
+## Storage info
+
+Return disk-level storage information including capacity, used space, and heal status per drive.
+
+**`GET /minio/admin/v3/storageinfo`**
+
+Requires: `admin:StorageInfo` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/storageinfo" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+info, err := adminClient.StorageInfo(context.Background())
+for _, disk := range info.Disks {
+    fmt.Printf("%s: used=%d total=%d healing=%v\n",
+        disk.Endpoint, disk.UsedSpace, disk.TotalSpace, disk.Healing)
+}
+```
+
+</CodeGroup>
+
+**Response body (JSON):**
+
+<ResponseField name="Disks" type="object[]">
+  Array of disk information objects.
+
+  <Expandable title="properties">
+    <ResponseField name="Endpoint" type="string">Disk endpoint URL.</ResponseField>
+    <ResponseField name="RootDisk" type="boolean">Whether this is a root (OS) disk.</ResponseField>
+    <ResponseField name="Path" type="string">Filesystem path.</ResponseField>
+    <ResponseField name="Healing" type="boolean">Whether the disk is currently being healed.</ResponseField>
+    <ResponseField name="State" type="string">Disk state, e.g. `ok`, `offline`, `unformatted`.</ResponseField>
+    <ResponseField name="UUID" type="string">Disk UUID.</ResponseField>
+    <ResponseField name="UsedSpace" type="number">Bytes used.</ResponseField>
+    <ResponseField name="TotalSpace" type="number">Total disk capacity in bytes.</ResponseField>
+    <ResponseField name="FreeSpace" type="number">Available bytes.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Data usage info
+
+Return aggregated data usage statistics including per-bucket usage, object counts, and tiered storage information.
+
+**`GET /minio/admin/v3/datausageinfo`**
+
+Requires: `admin:DataUsageInfo` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/datausageinfo" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+usage, err := adminClient.DataUsageInfo(context.Background())
+fmt.Printf("Total objects: %d, Total size: %d\n",
+    usage.ObjectsTotalCount, usage.ObjectsTotalSize)
+```
+
+</CodeGroup>
+
+**Response body (JSON):**
+
+<ResponseField name="objectsTotalCount" type="number">
+  Total number of objects across all buckets.
+</ResponseField>
+
+<ResponseField name="objectsTotalSize" type="number">
+  Total storage used by all objects in bytes.
+</ResponseField>
+
+<ResponseField name="bucketsCount" type="number">
+  Number of buckets.
+</ResponseField>
+
+<ResponseField name="bucketsUsageInfo" type="object">
+  Per-bucket map of usage statistics including object counts, sizes, and replication status.
+</ResponseField>
+
+---
+
+## Real-time metrics
+
+Stream real-time server metrics including request rates, throughput, and error rates. Responses are streamed as newline-delimited JSON.
+
+**`GET /minio/admin/v3/metrics`**
+
+Requires: `admin:ServerInfo` admin action.
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/minio/admin/v3/metrics?interval=1s&n=10" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go madmin SDK
+metricsCh, err := adminClient.Metrics(context.Background(), madmin.MetricsAll, time.Second)
+for m := range metricsCh {
+    if m.Err != nil {
+        break
+    }
+    fmt.Println(m.Aggregated)
+}
+```
+
+</CodeGroup>
+
+<ParamField query="interval" type="string" default="1s">
+  Polling interval as a Go duration string, e.g. `1s`, `5s`. Minimum is `1s`.
+</ParamField>
+
+<ParamField query="n" type="number" default="2147483647">
+  Number of metric snapshots to return before closing the stream.
+</ParamField>
+
+<ParamField query="types" type="number">
+  Bitmask of metric types to include. Defaults to all metric types.
+</ParamField>
+
+<ParamField query="by-disk" type="boolean" default="false">
+  Include per-disk breakdowns in the response.
+</ParamField>
+
+<ParamField query="by-host" type="boolean" default="false">
+  Include per-host breakdowns in the response.
+</ParamField>
+
+**Response:** A stream of newline-delimited JSON `RealtimeMetrics` objects. The final object has `"Final": true`.
+
+<ResponseField name="RealtimeMetrics" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Aggregated" type="object">Cluster-wide aggregated metrics.</ResponseField>
+    <ResponseField name="ByHost" type="object">Per-host metrics (when `by-host=true`).</ResponseField>
+    <ResponseField name="ByDisk" type="object">Per-disk metrics (when `by-disk=true`).</ResponseField>
+    <ResponseField name="Final" type="boolean">True on the last message in the stream.</ResponseField>
+  </Expandable>
+</ResponseField>

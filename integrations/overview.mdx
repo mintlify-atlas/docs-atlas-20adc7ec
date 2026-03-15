@@ -1,0 +1,202 @@
+---
+title: "Integrations Overview"
+description: "MinIO supports event notifications to a wide range of external systems, triggered by object and bucket operations."
+---
+
+MinIO's event notification system publishes S3 events to external targets whenever objects or buckets change. You can configure multiple targets per bucket and filter events by type, prefix, or suffix.
+
+## How Event Notifications Work
+
+When an S3 operation occurs, MinIO evaluates the bucket's notification rules. If a rule matches the event type and object key filter, MinIO publishes the event to all configured targets asynchronously.
+
+<Steps>
+  <Step title="Configure a notification target">
+    Enable and configure a notification target (Kafka, webhook, Elasticsearch, etc.) using `mc admin config set`.
+  </Step>
+  <Step title="Subscribe a bucket">
+    Use `mc event add` to subscribe a bucket to one or more event types, with optional prefix/suffix filters.
+  </Step>
+  <Step title="Events are published">
+    When matching operations occur, MinIO publishes an event payload to the configured target.
+  </Step>
+</Steps>
+
+## Event Types
+
+The following event types are defined in the source (`internal/event/name.go`) and can be used in notification configurations:
+
+### Object Events
+
+| Event Type | Description |
+|:-----------|:------------|
+| `s3:ObjectCreated:*` | All object creation events |
+| `s3:ObjectCreated:Put` | Object uploaded via PUT |
+| `s3:ObjectCreated:Post` | Object uploaded via POST (form upload) |
+| `s3:ObjectCreated:Copy` | Object created via server-side copy |
+| `s3:ObjectCreated:CompleteMultipartUpload` | Multipart upload completed |
+| `s3:ObjectCreated:PutRetention` | Object retention set |
+| `s3:ObjectCreated:PutLegalHold` | Legal hold applied |
+| `s3:ObjectCreated:PutTagging` | Object tags added |
+| `s3:ObjectCreated:DeleteTagging` | Object tags removed |
+| `s3:ObjectRemoved:*` | All object removal events |
+| `s3:ObjectRemoved:Delete` | Object deleted |
+| `s3:ObjectRemoved:DeleteMarkerCreated` | Delete marker created (versioned bucket) |
+| `s3:ObjectRemoved:NoOP` | No-op delete (object already absent) |
+| `s3:ObjectRemoved:DeleteAllVersions` | All versions of an object deleted |
+| `s3:ObjectAccessed:*` | All object access events |
+| `s3:ObjectAccessed:Get` | Object downloaded via GET |
+| `s3:ObjectAccessed:Head` | Object metadata retrieved via HEAD |
+| `s3:ObjectAccessed:GetRetention` | Object retention retrieved |
+| `s3:ObjectAccessed:GetLegalHold` | Legal hold status retrieved |
+| `s3:ObjectAccessed:Attributes` | Object attributes retrieved |
+
+### Bucket Events
+
+| Event Type | Description |
+|:-----------|:------------|
+| `s3:BucketCreated:*` | Bucket created |
+| `s3:BucketRemoved:*` | Bucket deleted |
+
+### Lifecycle and Transition Events
+
+| Event Type | Description |
+|:-----------|:------------|
+| `s3:LifecycleDelMarkerExpiration:Delete` | ILM expiration of a delete marker |
+| `s3:ObjectTransition:*` | All transition events |
+| `s3:ObjectTransition:Complete` | Object transitioned to tier |
+| `s3:ObjectTransition:Failed` | Object transition failed |
+| `s3:ObjectRestore:*` | All restore events |
+| `s3:ObjectRestore:Post` | Restore initiated |
+| `s3:ObjectRestore:Completed` | Restore completed |
+
+### Replication Events
+
+| Event Type | Description |
+|:-----------|:------------|
+| `s3:Replication:*` | All replication events |
+| `s3:Replication:OperationCompletedReplication` | Replication succeeded |
+| `s3:Replication:OperationFailedReplication` | Replication failed |
+| `s3:Replication:OperationMissedThreshold` | Replication missed SLA threshold |
+| `s3:Replication:OperationReplicatedAfterThreshold` | Replication completed after threshold |
+| `s3:Replication:OperationNotTracked` | Replication not tracked |
+
+### Scanner Events
+
+| Event Type | Description |
+|:-----------|:------------|
+| `s3:Scanner:ManyVersions` | Object has many versions |
+| `s3:Scanner:LargeVersions` | Object version data is large |
+| `s3:Scanner:BigPrefix` | Prefix contains many folders |
+
+## Notification Targets
+
+MinIO supports the following external notification targets:
+
+<CardGroup cols={2}>
+  <Card title="Kafka" href="/integrations/kafka">
+    Publish events to Apache Kafka topics. Supports TLS and SASL authentication.
+  </Card>
+  <Card title="Elasticsearch" href="/integrations/elasticsearch">
+    Index events into Elasticsearch. Supports namespace and access log formats.
+  </Card>
+  <Card title="Webhook" href="/integrations/webhook">
+    POST events as JSON to any HTTP endpoint. Supports bearer token and mTLS auth.
+  </Card>
+  <Card title="AMQP / RabbitMQ">
+    Publish events to an AMQP broker (e.g., RabbitMQ). Configure via `notify_amqp`.
+  </Card>
+  <Card title="MQTT">
+    Publish events to an MQTT broker for IoT and messaging pipelines. Configure via `notify_mqtt`.
+  </Card>
+  <Card title="Redis">
+    Store events in a Redis list or sorted set. Configure via `notify_redis`.
+  </Card>
+  <Card title="PostgreSQL">
+    Write events to a PostgreSQL table. Configure via `notify_postgresql`.
+  </Card>
+  <Card title="MySQL">
+    Write events to a MySQL table. Configure via `notify_mysql`.
+  </Card>
+  <Card title="NSQ">
+    Publish events to an NSQ topic. Configure via `notify_nsq`.
+  </Card>
+  <Card title="NATS">
+    Publish events to a NATS subject. Configure via `notify_nats`.
+  </Card>
+</CardGroup>
+
+## Event Payload Structure
+
+All notification targets receive events using the same JSON envelope (`event.Log` from `internal/event/event.go`):
+
+```json
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "mybucket/images/photo.jpg",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "us-east-1",
+      "eventTime": "2024-01-15T10:30:00.000Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "minioadmin"
+      },
+      "requestParameters": {
+        "principalId": "minioadmin",
+        "region": "us-east-1",
+        "sourceIPAddress": "127.0.0.1"
+      },
+      "responseElements": {
+        "x-amz-request-id": "<request-id>",
+        "x-amz-id-2": "<node-id>",
+        "x-minio-origin-endpoint": "http://localhost:9000",
+        "x-minio-deployment-id": "<deployment-id>"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "Config",
+        "bucket": {
+          "name": "mybucket",
+          "ownerIdentity": { "principalId": "minioadmin" },
+          "arn": "arn:aws:s3:::mybucket"
+        },
+        "object": {
+          "key": "images/photo.jpg",
+          "size": 204800,
+          "eTag": "abc123...",
+          "contentType": "image/jpeg",
+          "userMetadata": {},
+          "sequencer": "<hex-timestamp>"
+        }
+      },
+      "source": {
+        "host": "127.0.0.1",
+        "userAgent": "aws-sdk-go/1.44.0"
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  MinIO adds two non-standard response elements: `x-minio-origin-endpoint` and `x-minio-deployment-id`. These are useful for identifying the source MinIO cluster in multi-site deployments.
+</Note>
+
+## Subscribing a Bucket to Events
+
+```bash
+# Subscribe mybucket to all object creation and removal events
+mc event add myminio/mybucket arn:minio:sqs::1:kafka \
+  --event "s3:ObjectCreated:*,s3:ObjectRemoved:*"
+
+# Filter by prefix and suffix
+mc event add myminio/mybucket arn:minio:sqs::1:webhook \
+  --event "s3:ObjectCreated:Put" \
+  --prefix "images/" \
+  --suffix ".jpg"
+
+# List configured events
+mc event list myminio/mybucket
+```

@@ -1,0 +1,167 @@
+---
+title: "Distributed mode"
+description: "Deploy MinIO across multiple nodes and drives to achieve node-level fault tolerance and horizontal scale."
+---
+
+MinIO in distributed mode pools drives from multiple machines into a single object storage deployment. It tolerates simultaneous node and drive failures while maintaining read-after-write consistency and a standard S3-compatible API.
+
+## Why distributed mode
+
+A standalone MinIO server goes offline if the host machine fails. In a distributed deployment with `m` nodes and `n` drives per node, MinIO keeps serving reads and writes as long as at least `m/2` servers **or** `(m × n) / 2` drives remain online.
+
+**Example:** A 16-node deployment with 200 drives per node continues operating with up to 4 nodes (800 drives) offline.
+
+Additional benefits:
+
+- **Erasure coding** activates automatically (minimum 2 drives required)
+- **Bit rot protection** via HighwayHash checksums on every shard
+- **Read-after-write and list-after-write consistency** on POSIX-compliant filesystems
+- **No external metadata service** — all state lives on the drives
+
+## Prerequisites
+
+- All nodes should run the same OS and have the same number of drives
+- All nodes must share the same `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values
+- Drive directories must be empty at first start
+- Node clocks must be within 15 minutes of each other (enable NTP)
+- Recommended filesystems: **xfs**, **zfs**, or **btrfs**
+
+<Warning>
+  Do **not** use ext4 in production. ext4 does not reliably honor POSIX `O_DIRECT`/`fdatasync` semantics and trades consistency for performance. If you must use NFS, use NFSv4 at minimum.
+</Warning>
+
+## Starting a distributed cluster
+
+Run the same `minio server` command on every node in the cluster. MinIO uses the ellipsis (`{1...n}`) notation to describe the full set of nodes and drives:
+
+```sh
+export MINIO_ROOT_USER=<ACCESS_KEY>
+export MINIO_ROOT_PASSWORD=<SECRET_KEY>
+minio server http://host{1...n}/export{1...m}
+```
+
+<Warning>
+  Always use three dots (`{1...n}`) in the ellipsis syntax. Two dots (`{1..n}`) are interpreted by the shell and not passed to MinIO, which breaks erasure coding distribution.
+</Warning>
+
+### Example: 4 nodes × 16 drives
+
+```sh
+export MINIO_ROOT_USER=myaccesskey
+export MINIO_ROOT_PASSWORD=mysecretkey
+minio server http://host{1...4}/export{1...16}
+```
+
+This creates a 64-drive cluster. With 16-drive erasure sets, you get 4 sets with a default parity of 4, tolerating up to 4 drive failures per set.
+
+### Example: rack-level redundancy
+
+```sh
+minio server http://rack{1...4}-host{1...8}.example.net/export{1...16}
+```
+
+## Erasure set formation in distributed mode
+
+MinIO expands the ellipsis arguments into an ordered list of drives and then assigns them to erasure sets:
+
+```
+minio server http://host{1...2}/export{1...8}
+```
+
+Expands to:
+
+```
+http://host1/export1
+http://host2/export1
+http://host1/export2
+http://host2/export2
+http://host1/export3
+http://host2/export3
+...
+```
+
+MinIO interleaves nodes to maximize fault isolation — each erasure set draws drives from as many different nodes as possible.
+
+### Set size selection
+
+MinIO calculates set size using the greatest common divisor (GCD) of acceptable set sizes (4–16), choosing the largest set size that divides evenly into the total drive count. For odd numbers of nodes, MinIO applies node affinity to maintain uniform distribution.
+
+| Total drives | Set size | Number of sets |
+|-------------|----------|----------------|
+| 32          | 16       | 2              |
+| 64          | 16       | 4              |
+| 1024        | 16       | 64             |
+
+## Object placement
+
+When a `PutObject` request arrives, MinIO selects the erasure set using a deterministic SipHash of the object name:
+
+```go
+func sipHashMod(key string, cardinality int, id [16]byte) int {
+        sip := siphash.New(id[:])
+        sip.Write([]byte(key))
+        return int(sip.Sum64() % uint64(cardinality))
+}
+```
+
+The same object name always maps to the same erasure set, so reads never need a separate metadata lookup.
+
+## Expanding a cluster with server pools
+
+MinIO supports horizontal expansion by adding new **server pools** — independent groups of nodes appended to the startup command:
+
+```sh
+export MINIO_ROOT_USER=<ACCESS_KEY>
+export MINIO_ROOT_PASSWORD=<SECRET_KEY>
+minio server http://host{1...n}/export{1...m} http://host{o...z}/export{1...m}
+```
+
+**Concrete example — adding 8 nodes to an existing 4-node cluster:**
+
+```sh
+minio server http://host{1...4}/export{1...16} http://host{5...12}/export{1...16}
+```
+
+Pool behavior:
+
+- New objects are placed in the pool with the most proportionate free space
+- Each pool is a self-contained erasure coded entity with its own read/write quorum
+- Pool additions are non-disruptive — the restart is immediate and applications stay connected
+- **Each pool must use the same erasure parity configuration as the original pool** to maintain a consistent redundancy SLA
+
+<Note>
+  There is no limit on the number of server pools that can be combined.
+</Note>
+
+## Sizing reference
+
+Default parity counts and failure tolerances for common configurations:
+
+| Servers | Drives/node | Stripe size | Default parity | Read tolerance (servers) | Write tolerance (servers) |
+|---------|------------|-------------|----------------|--------------------------|---------------------------|
+| 4       | 2          | 8           | 4              | 2                        | 1                         |
+| 8       | 2          | 16          | 4              | 2                        | 2                         |
+| 16      | 2          | 16          | 4              | 4                        | 4                         |
+
+See [SIZING.md](https://github.com/minio/minio/blob/master/docs/distributed/SIZING.md) in the source repository for the complete table.
+
+## Verifying the setup
+
+```sh
+mc alias set myminio http://host1:9000 myaccesskey mysecretkey
+mc admin info myminio
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Erasure coding" icon="shield" href="/architecture/erasure-coding">
+    Reed-Solomon algorithm and drive failure tolerance.
+  </Card>
+  <Card title="Storage classes" icon="layers" href="/architecture/storage-classes">
+    Customize parity per object with STANDARD and REDUCED_REDUNDANCY.
+  </Card>
+  <Card title="Kubernetes" icon="server" href="/install/kubernetes">
+    Run distributed MinIO on Kubernetes.
+  </Card>
+</CardGroup>

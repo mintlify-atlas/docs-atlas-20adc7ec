@@ -1,0 +1,159 @@
+---
+title: "Data Healing"
+description: "Understand MinIO's automatic background healing and how to trigger manual healing to recover missing or corrupted objects."
+---
+
+MinIO uses erasure coding to distribute objects across drives. When drives fail or data becomes corrupted, MinIO can **heal** (reconstruct) the missing or corrupted shards from the remaining drives—provided the erasure set still has enough drives available to reconstruct the data.
+
+Healing operates at the object shard level. It does not move data between nodes; it reconstructs missing or corrupted erasure-coded shards in place.
+
+## Automatic background healing
+
+MinIO runs a continuous background healing process that periodically scans all objects in the namespace and repairs any that are degraded. The background healer:
+
+- Runs automatically on every MinIO deployment using erasure coding.
+- Integrates with the disk scanner, which cycles through the namespace approximately every minute, scanning up to 1/16 of objects per pass.
+- Prioritizes objects that are most degraded (missing the most shards).
+- Automatically heals objects whose `X-Amz-Replication-Status` is `PENDING` or `FAILED` to retry failed replications.
+
+No configuration is required to enable background healing—it is always active on erasure-coded deployments.
+
+## Bitrot scanning
+
+In addition to healing missing shards, MinIO performs **bitrot scanning** to detect silent data corruption. Bitrot detection computes and verifies checksums at the shard level.
+
+The scanner periodically switches between a normal scan mode and a deep scan mode:
+
+- **Normal scan**: Checks object metadata and detects missing shards without reading all shard data.
+- **Deep scan**: Reads and verifies every shard's checksum to detect bitrot corruption.
+
+The frequency of deep scans is controlled internally by the scanner cycle configuration (`bitrotCycle`). The current scan mode is tracked per cycle and can be observed in Prometheus metrics.
+
+## Manual healing with mc admin heal
+
+Manual healing lets you target a specific bucket, prefix, or object for immediate repair rather than waiting for the background scanner.
+
+### Heal an entire bucket
+
+```sh
+mc admin heal -r myminio/mybucket
+```
+
+The `-r` / `--recursive` flag walks the full bucket namespace.
+
+### Heal a specific object
+
+```sh
+mc admin heal myminio/mybucket/path/to/object
+```
+
+### Deep heal (bitrot scan)
+
+To perform a deep scan that verifies shard checksums in addition to checking for missing shards:
+
+```sh
+mc admin heal --scan deep myminio/mybucket
+```
+
+Example from the resiliency test suite:
+
+```sh
+mc admin heal --json --scan=deep myminio/test-bucket/uploads/file.bin
+```
+
+The `--json` flag outputs structured JSON results, useful for scripting:
+
+```json
+{
+  "name": "test-bucket/uploads/file.bin",
+  "before": { "color": "yellow", "missing": 1, "corrupted": 0 },
+  "after":  { "color": "green",  "missing": 0, "corrupted": 0 }
+}
+```
+
+Object color codes:
+
+| Color | Meaning |
+|---|---|
+| `green` | Object is fully intact |
+| `yellow` | Object is degraded but readable; some shards are missing or corrupted |
+| `red` | Object is unreadable; too many shards are missing or corrupted |
+| `grey` | Object could not be evaluated |
+
+### Heal after ILM transition
+
+After setting up ILM tiering, verify the object is intact on the local cluster:
+
+```sh
+mc admin heal -r sitea/bucket/README.md --json --force
+```
+
+The `--force` flag starts a new heal sequence even if one is already running.
+
+## Healing status and monitoring
+
+### Prometheus metrics
+
+MinIO exposes Prometheus metrics for monitoring healing activity:
+
+| Metric | Description |
+|---|---|
+| `minio_heal_objects_total` | Objects scanned in the current self-healing run |
+
+Additional replication and scanner metrics are available in the `/minio/v2/metrics/cluster` Prometheus endpoint.
+
+### Interpreting heal output
+
+The JSON output from `mc admin heal --json` includes `before` and `after` states for each object, describing the number of missing and corrupted shards before and after healing:
+
+```json
+{
+  "name": "mybucket/myobject",
+  "before": { "color": "yellow", "missing": 2, "corrupted": 0 },
+  "after":  { "color": "green",  "missing": 0, "corrupted": 0 }
+}
+```
+
+## Heal speed and system impact
+
+Background healing is designed to be non-intrusive. The scanner uses a sleep-based throttle (`weSleep`) to yield CPU and I/O to serving live requests. Under heavy load, healing may run more slowly.
+
+To accelerate healing in an urgent situation (for example, after recovering a failed drive), you can increase scanner speed at the cost of higher I/O:
+
+```sh
+export MINIO_SCANNER_SPEED=fastest
+```
+
+This environment variable is respected at startup and controls how aggressively the scanner runs.
+
+<Warning>
+  Setting `MINIO_SCANNER_SPEED=fastest` increases disk and CPU utilization significantly. Use this setting during maintenance windows or recovery operations, not in normal production operation.
+</Warning>
+
+## AccordionGroup: Common questions
+
+<AccordionGroup>
+  <Accordion title="Does healing require downtime?">
+    No. Healing runs in the background and does not interrupt read or write operations. Objects remain accessible while being healed, as long as enough erasure shards are available to reconstruct the data.
+  </Accordion>
+  <Accordion title="What is the minimum number of drives required to heal?">
+    MinIO requires at least N/2 + 1 drives per erasure set to be available to reconstruct missing data (where N is the total number of drives in the erasure set). With fewer drives than this, objects in the affected set cannot be healed.
+  </Accordion>
+  <Accordion title="How is bitrot different from a missing shard?">
+    A missing shard means the drive is offline or the shard file is absent. Bitrot is silent corruption—the shard file exists but its contents do not match the stored checksum. Normal scans detect missing shards; deep scans (`--scan deep`) detect both missing shards and bitrot.
+  </Accordion>
+  <Accordion title="Will healing re-replicate objects that failed replication?">
+    Yes. The background scanner also picks up objects with `PENDING` or `FAILED` replication status and re-queues them for replication. This is distinct from erasure shard healing but is handled by the same scanner cycle.
+  </Accordion>
+</AccordionGroup>
+
+## mc admin heal command reference
+
+| Command | Description |
+|---|---|
+| `mc admin heal <alias>/<bucket>` | Heal objects in a bucket |
+| `mc admin heal -r <alias>/<bucket>` | Recursively heal all objects in a bucket |
+| `mc admin heal <alias>/<bucket>/<object>` | Heal a specific object |
+| `mc admin heal --scan deep <alias>/<bucket>` | Deep scan with bitrot verification |
+| `mc admin heal --json <alias>/<bucket>/<object>` | Output heal results as JSON |
+| `mc admin heal --force <alias>/<bucket>` | Force a new heal sequence |

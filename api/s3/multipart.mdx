@@ -1,0 +1,308 @@
+---
+title: "Multipart Upload"
+description: "S3-compatible API for uploading large objects in parallel parts with MinIO."
+---
+
+Multipart upload lets you split large objects into parts, upload them in parallel, and then assemble them into a single object. It is recommended for any object larger than 100 MiB.
+
+<Info>
+MinIO part size must be between 5 MiB and 5 GiB. The last part may be any size from 0 B to 5 GiB. Each upload may have at most 10,000 parts.
+</Info>
+
+## Multipart upload limits
+
+| Limit | Value |
+|---|---|
+| Minimum part size | 5 MiB (except the last part) |
+| Maximum part size | 5 GiB |
+| Maximum number of parts per upload | 10,000 |
+| Maximum number of multipart uploads returned per list request | 1,000 |
+
+## Workflow
+
+<Steps>
+  <Step title="Initiate the upload">
+    Call `CreateMultipartUpload` to get an `uploadId`.
+  </Step>
+  <Step title="Upload parts">
+    Call `UploadPart` for each chunk, recording the `ETag` returned for each part.
+  </Step>
+  <Step title="Complete the upload">
+    Call `CompleteMultipartUpload` with the list of part numbers and ETags to assemble the object.
+  </Step>
+</Steps>
+
+To cancel an in-progress upload call `AbortMultipartUpload`.
+
+---
+
+## CreateMultipartUpload
+
+Initiate a multipart upload and receive an `uploadId` for subsequent part uploads.
+
+**`POST /{bucket}/{key}?uploads`**
+
+<CodeGroup>
+
+```bash curl
+curl -X POST "https://minio.example.com/my-bucket/large-file.bin?uploads" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/octet-stream'
+```
+
+```go Go SDK
+// The Go SDK manages multipart uploads automatically via PutObject
+// when the object size exceeds the configured part size.
+uploadInfo, err := client.PutObject(
+    context.Background(),
+    "my-bucket", "large-file.bin",
+    reader, fileSize,
+    minio.PutObjectOptions{
+        ContentType: "application/octet-stream",
+        PartSize:    64 * 1024 * 1024, // 64 MiB parts
+    },
+)
+```
+
+</CodeGroup>
+
+<ParamField path="path.bucket" type="string" required>
+  Target bucket name.
+</ParamField>
+
+<ParamField path="path.key" type="string" required>
+  Object key for the final assembled object.
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  MIME type of the final object.
+</ParamField>
+
+<ParamField header="x-amz-server-side-encryption" type="string">
+  Server-side encryption algorithm: `AES256` or `aws:kms`.
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="InitiateMultipartUploadResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Bucket" type="string">Target bucket name.</ResponseField>
+    <ResponseField name="Key" type="string">Object key.</ResponseField>
+    <ResponseField name="UploadId" type="string">
+      Unique identifier for this multipart upload. Pass this value to all subsequent part and completion requests.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## UploadPart
+
+Upload one part of a multipart upload. Record the `ETag` from the response for use in `CompleteMultipartUpload`.
+
+**`PUT /{bucket}/{key}?partNumber={partNumber}&uploadId={uploadId}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT \
+  "https://minio.example.com/my-bucket/large-file.bin?partNumber=1&uploadId=UPLOAD_ID" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  --data-binary @part1.bin
+```
+
+</CodeGroup>
+
+<ParamField query="partNumber" type="number" required>
+  Part number from 1 to 10,000. Parts do not need to be uploaded in order.
+</ParamField>
+
+<ParamField query="uploadId" type="string" required>
+  The `uploadId` returned by `CreateMultipartUpload`.
+</ParamField>
+
+<ParamField header="Content-Length" type="number" required>
+  Size of the part body in bytes. Must be between 5 MiB and 5 GiB (last part may be smaller).
+</ParamField>
+
+<ParamField header="Content-MD5" type="string">
+  Base64-encoded MD5 of the part body for integrity checking.
+</ParamField>
+
+**Response headers:**
+
+<ResponseField name="ETag" type="string">
+  Checksum of the part. Store this value alongside the `partNumber` for use in `CompleteMultipartUpload`.
+</ResponseField>
+
+---
+
+## CompleteMultipartUpload
+
+Assemble previously uploaded parts into a single object.
+
+**`POST /{bucket}/{key}?uploadId={uploadId}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X POST \
+  "https://minio.example.com/my-bucket/large-file.bin?uploadId=UPLOAD_ID" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/xml' \
+  -d '<CompleteMultipartUpload>
+        <Part><PartNumber>1</PartNumber><ETag>"abc123"</ETag></Part>
+        <Part><PartNumber>2</PartNumber><ETag>"def456"</ETag></Part>
+      </CompleteMultipartUpload>'
+```
+
+</CodeGroup>
+
+<ParamField query="uploadId" type="string" required>
+  The `uploadId` returned by `CreateMultipartUpload`.
+</ParamField>
+
+<ParamField body="CompleteMultipartUpload.Part" type="object[]" required>
+  Ordered list of parts. Parts must be listed in ascending order by `PartNumber`.
+
+  <Expandable title="properties">
+    <ParamField body="PartNumber" type="number" required>
+      The part number, 1–10,000.
+    </ParamField>
+    <ParamField body="ETag" type="string" required>
+      The `ETag` value returned when that part was uploaded.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="CompleteMultipartUploadResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Location" type="string">URL of the assembled object.</ResponseField>
+    <ResponseField name="Bucket" type="string">Bucket name.</ResponseField>
+    <ResponseField name="Key" type="string">Object key.</ResponseField>
+    <ResponseField name="ETag" type="string">Composite ETag of the assembled object.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## AbortMultipartUpload
+
+Cancel an in-progress multipart upload and delete all uploaded parts.
+
+**`DELETE /{bucket}/{key}?uploadId={uploadId}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE \
+  "https://minio.example.com/my-bucket/large-file.bin?uploadId=UPLOAD_ID" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+<ParamField query="uploadId" type="string" required>
+  The `uploadId` of the upload to abort.
+</ParamField>
+
+**Response:** `204 No Content`.
+
+<Warning>
+Aborted uploads still consume storage until MinIO runs its lifecycle cleanup. Always abort uploads you no longer need.
+</Warning>
+
+---
+
+## ListParts
+
+List the parts that have been uploaded for an in-progress multipart upload.
+
+**`GET /{bucket}/{key}?uploadId={uploadId}`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket/large-file.bin?uploadId=UPLOAD_ID" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+<ParamField query="uploadId" type="string" required>
+  The `uploadId` to inspect.
+</ParamField>
+
+<ParamField query="max-parts" type="number" default="1000">
+  Maximum number of parts to return. Maximum 10,000.
+</ParamField>
+
+<ParamField query="part-number-marker" type="number">
+  Only return parts with part numbers greater than this value.
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="ListPartsResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Part" type="object[]">
+      Each part with `PartNumber`, `ETag`, `Size`, and `LastModified`.
+    </ResponseField>
+    <ResponseField name="IsTruncated" type="boolean">
+      Whether more parts exist beyond this page.
+    </ResponseField>
+    <ResponseField name="NextPartNumberMarker" type="number">
+      Marker to use in the next request when `IsTruncated` is `true`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## ListMultipartUploads
+
+List in-progress multipart uploads for a bucket.
+
+**`GET /{bucket}?uploads`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket?uploads" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+<ParamField query="prefix" type="string">
+  Limit results to uploads whose keys begin with this prefix.
+</ParamField>
+
+<ParamField query="max-uploads" type="number" default="1000">
+  Maximum number of uploads to return. Maximum 1,000.
+</ParamField>
+
+<ParamField query="delimiter" type="string">
+  Group keys by this delimiter character.
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="ListMultipartUploadsResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Upload" type="object[]">
+      Each in-progress upload with `Key`, `UploadId`, `Initiated`, and `StorageClass`.
+    </ResponseField>
+    <ResponseField name="IsTruncated" type="boolean">
+      Whether the list was truncated.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

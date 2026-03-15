@@ -1,0 +1,314 @@
+---
+title: "Bucket and object access policies"
+description: "Write IAM and bucket policies using the S3 policy JSON format to control access to MinIO resources."
+---
+
+MinIO uses the same IAM policy JSON format as AWS. Policies can be attached to IAM users, groups, STS sessions, or directly to buckets. Access is denied by default; an explicit `Allow` statement is required, and an explicit `Deny` overrides any `Allow`.
+
+## Policy JSON structure
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "optional-statement-id",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::my-bucket/*"]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `Version` | Always `"2012-10-17"` |
+| `Statement` | Array of one or more permission statements |
+| `Sid` | Optional human-readable statement identifier |
+| `Effect` | `"Allow"` or `"Deny"` |
+| `Action` | One or more S3 or admin actions |
+| `Resource` | One or more resource ARNs |
+| `Principal` | Used in bucket policies to identify the grantee |
+| `Condition` | Optional condition block |
+
+## Resource ARN format
+
+```
+arn:aws:s3:::<bucket-name>
+arn:aws:s3:::<bucket-name>/*
+arn:aws:s3:::<bucket-name>/<prefix>/*
+```
+
+The wildcard `*` matches all objects within a prefix. To match the bucket itself (for operations like `s3:ListBucket`), use the bucket ARN without a trailing path.
+
+## Built-in canned policies
+
+MinIO ships four built-in policies that apply to all resources on the server:
+
+<CodeGroup>
+
+```json readonly
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetBucketLocation", "s3:GetObject"],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+```json writeonly
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject"],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+```json readwrite
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:*"],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+```json diagnostics
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "admin:Prometheus",
+      "admin:Profiling",
+      "admin:ServerTrace",
+      "admin:ConsoleLog",
+      "admin:ServerInfo",
+      "admin:TopLocksInfo",
+      "admin:OBDInfo",
+      "admin:BandwidthMonitor"
+    ],
+    "Resource": ["arn:aws:s3:::*"]
+  }]
+}
+```
+
+</CodeGroup>
+
+Use `mc admin policy create` to override a built-in policy or create a new one:
+
+```bash
+mc admin policy create myminio getonly getonly.json
+```
+
+## Common S3 actions
+
+| Action | Description |
+|---|---|
+| `s3:GetObject` | Download an object |
+| `s3:PutObject` | Upload an object |
+| `s3:DeleteObject` | Delete an object |
+| `s3:ListBucket` | List objects in a bucket |
+| `s3:GetBucketLocation` | Get the bucket region |
+| `s3:CreateBucket` | Create a new bucket |
+| `s3:DeleteBucket` | Delete a bucket |
+| `s3:GetBucketPolicy` | Read the bucket policy |
+| `s3:PutBucketPolicy` | Write the bucket policy |
+| `s3:GetEncryptionConfiguration` | Read bucket encryption settings |
+| `s3:PutEncryptionConfiguration` | Write bucket encryption settings |
+| `s3:ListAllMyBuckets` | List all buckets |
+| `s3:*` | All S3 actions |
+
+## Example: scoped read-only access to a bucket
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::my-bucketname"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::my-bucketname/*"]
+    }
+  ]
+}
+```
+
+## Example: user home directory pattern
+
+This policy gives each user full access to a prefix matching their username:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::mybucket"],
+      "Condition": {"StringLike": {"s3:prefix": ["${aws:username}/*"]}}
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": ["arn:aws:s3:::mybucket/${aws:username}/*"]
+    }
+  ]
+}
+```
+
+For OIDC users, replace `${aws:username}` with `${jwt:preferred_username}`. For LDAP users, use `${ldap:username}`.
+
+## Bucket policies with SSE-KMS enforcement
+
+These examples are taken directly from the MinIO source repository.
+
+### Deny uploads that are not SSE-KMS encrypted
+
+```json
+{
+  "Version": "2012-10-17",
+  "Id": "PutObjectPolicy",
+  "Statement": [{
+    "Sid": "DenyObjectsThatAreNotSSEKMS",
+    "Effect": "Deny",
+    "Principal": "*",
+    "Action": "s3:PutObject",
+    "Resource": "arn:aws:s3:::multi-key-poc/*",
+    "Condition": {
+      "Null": {
+        "s3:x-amz-server-side-encryption-aws-kms-key-id": "true"
+      }
+    }
+  }]
+}
+```
+
+### Deny uploads that use a different KMS key
+
+```json
+{
+  "Version": "2012-10-17",
+  "Id": "PutObjectPolicy1",
+  "Statement": [{
+    "Sid": "DenyObjectsWithInvalidSSEKMS",
+    "Effect": "Deny",
+    "Principal": "*",
+    "Action": "s3:PutObject",
+    "Resource": "arn:aws:s3:::multi-key-poc/*",
+    "Condition": {
+      "StringNotEquals": {
+        "s3:x-amz-server-side-encryption-aws-kms-key-id": "minio-default-key"
+      }
+    }
+  }]
+}
+```
+
+## Condition operators
+
+MinIO supports the following condition operators in policy statements:
+
+| Operator | Description |
+|---|---|
+| `StringEquals` | Exact string match |
+| `StringNotEquals` | Negated exact string match |
+| `StringLike` | Wildcard string match (`*` and `?`) |
+| `StringNotLike` | Negated wildcard match |
+| `IpAddress` | CIDR IP address match |
+| `NotIpAddress` | Negated CIDR match |
+| `Null` | Test whether a condition key is present |
+| `Bool` | Boolean comparison |
+
+### Common condition keys
+
+| Key | Description |
+|---|---|
+| `s3:prefix` | Object key prefix used in `ListBucket` |
+| `s3:x-amz-server-side-encryption-aws-kms-key-id` | KMS key ID used in the upload request |
+| `aws:SourceIp` | Requester IP address (CIDR) |
+| `aws:SecureTransport` | Boolean — request arrived over TLS |
+| `aws:CurrentTime` | ISO 8601 timestamp |
+| `aws:EpochTime` | Unix epoch timestamp |
+| `aws:PrincipalType` | `Account`, `User`, or STS role |
+| `aws:username` | IAM username (or STS identity) |
+
+### IP address restriction example
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": {
+    "Effect": "Allow",
+    "Action": "s3:ListBucket*",
+    "Resource": "arn:aws:s3:::mybucket",
+    "Condition": {"IpAddress": {"aws:SourceIp": "203.0.113.0/24"}}
+  }
+}
+```
+
+## Policy precedence rules
+
+1. An explicit `Deny` in any applicable policy always overrides any `Allow`.
+2. If no policy grants access, the request is denied by default.
+3. Inline session policies (passed via the `Policy` parameter to STS APIs) are intersected with the parent policy — they can only restrict, never expand, existing permissions.
+4. For users with multiple policies (e.g. a user policy and a group policy), the effective permission set is the **union** of all `Allow` statements minus any `Deny` statements.
+
+<AccordionGroup>
+  <Accordion title="How do I apply a bucket policy to all anonymous users?">
+    Set `"Principal": "*"` in the bucket policy statement. This grants or denies access to unauthenticated requests.
+
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": ["s3:GetObject"],
+        "Resource": ["arn:aws:s3:::public-bucket/*"]
+      }]
+    }
+    ```
+  </Accordion>
+  <Accordion title="Can a session policy add permissions not in the parent policy?">
+    No. The inline `Policy` parameter passed to STS APIs can only further restrict the parent user's permissions. The effective permissions are always the intersection of the session policy and the parent policy.
+  </Accordion>
+  <Accordion title="Does MinIO support the NotAction or NotResource policy elements?">
+    MinIO supports `NotAction` and `NotResource` in policy statements, following the same AWS IAM semantics where the element matches everything except the listed actions or resources.
+  </Accordion>
+</AccordionGroup>
+
+## Creating and attaching policies
+
+```bash
+# Create a custom policy
+mc admin policy create myminio mypolicy mypolicy.json
+
+# Attach to a user
+mc admin policy attach myminio mypolicy --user=newuser
+
+# Attach to a group
+mc admin policy attach myminio mypolicy --group=newgroup
+
+# List defined policies
+mc admin policy list myminio
+
+# Inspect a policy
+mc admin policy info myminio mypolicy
+
+# Remove a policy
+mc admin policy remove myminio mypolicy
+```

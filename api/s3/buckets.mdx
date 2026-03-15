@@ -1,0 +1,327 @@
+---
+title: "Bucket Operations"
+description: "S3-compatible API endpoints for creating, managing, and deleting MinIO buckets."
+---
+
+MinIO implements the AWS S3 bucket API. Buckets are the top-level containers for objects. All bucket operations require AWS Signature Version 4 authentication.
+
+<Note>
+MinIO does not impose a hard limit on the number of buckets, but recommends staying below 500,000 for optimal performance. Bucket names must be between 3 and 63 characters.
+</Note>
+
+## CreateBucket
+
+Create a new bucket.
+
+**`PUT /{bucket}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT https://minio.example.com/my-bucket \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+import (
+    "context"
+    "github.com/minio/minio-go/v7"
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+client, _ := minio.New("minio.example.com", &minio.Options{
+    Creds: credentials.NewStaticV4("ACCESS_KEY", "SECRET_KEY", ""),
+})
+
+err := client.MakeBucket(context.Background(), "my-bucket", minio.MakeBucketOptions{
+    Region: "us-east-1",
+})
+```
+
+</CodeGroup>
+
+<ParamField path="path.bucket" type="string" required>
+  The name of the bucket to create. Must be 3–63 characters, lowercase letters, numbers, and hyphens only.
+</ParamField>
+
+<ParamField body="CreateBucketConfiguration" type="object">
+  Optional XML body to specify a location constraint.
+
+  <Expandable title="properties">
+    <ParamField body="LocationConstraint" type="string">
+      The region for the bucket. If omitted, defaults to the server region.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Response:** `200 OK` with empty body on success.
+
+---
+
+## HeadBucket
+
+Check if a bucket exists and you have permission to access it.
+
+**`HEAD /{bucket}`**
+
+<CodeGroup>
+
+```bash curl
+curl -I https://minio.example.com/my-bucket \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+exists, err := client.BucketExists(context.Background(), "my-bucket")
+```
+
+</CodeGroup>
+
+**Response:** `200 OK` if the bucket exists and is accessible, `404 Not Found` if it does not exist, or `403 Forbidden` if access is denied.
+
+---
+
+## DeleteBucket
+
+Delete an empty bucket. The bucket must not contain any objects.
+
+**`DELETE /{bucket}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE https://minio.example.com/my-bucket \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+err := client.RemoveBucket(context.Background(), "my-bucket")
+```
+
+</CodeGroup>
+
+<Warning>
+The bucket must be empty before deletion. Delete all objects and their versions first.
+</Warning>
+
+**Response:** `204 No Content` on success.
+
+---
+
+## ListBuckets
+
+List all buckets owned by the authenticated user.
+
+**`GET /`**
+
+<CodeGroup>
+
+```bash curl
+curl https://minio.example.com/ \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+buckets, err := client.ListBuckets(context.Background())
+for _, bucket := range buckets {
+    fmt.Println(bucket.Name, bucket.CreationDate)
+}
+```
+
+</CodeGroup>
+
+**Response body (XML):**
+
+<ResponseField name="ListAllMyBucketsResult" type="object">
+  Root element of the response.
+
+  <Expandable title="properties">
+    <ResponseField name="Owner" type="object">
+      The bucket owner's identity.
+    </ResponseField>
+    <ResponseField name="Buckets" type="object">
+      Container for one or more `Bucket` elements.
+    </ResponseField>
+    <ResponseField name="Buckets.Bucket.Name" type="string">
+      Bucket name.
+    </ResponseField>
+    <ResponseField name="Buckets.Bucket.CreationDate" type="string">
+      ISO 8601 timestamp of when the bucket was created.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GetBucketLocation
+
+Return the region where the bucket resides.
+
+**`GET /{bucket}?location`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket?location" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+**Response body (XML):**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<LocationConstraint>us-east-1</LocationConstraint>
+```
+
+---
+
+## PutBucketVersioning
+
+Enable or suspend versioning for a bucket.
+
+**`PUT /{bucket}?versioning`**
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT "https://minio.example.com/my-bucket?versioning" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -d '<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>'
+```
+
+```go Go SDK
+import "github.com/minio/minio-go/v7"
+
+err := client.EnableVersioning(context.Background(), "my-bucket")
+// or
+err = client.SuspendVersioning(context.Background(), "my-bucket")
+```
+
+</CodeGroup>
+
+<ParamField body="VersioningConfiguration.Status" type="string" required>
+  `Enabled` to turn on versioning, `Suspended` to pause it.
+</ParamField>
+
+---
+
+## GetBucketVersioning
+
+Return the versioning state of a bucket.
+
+**`GET /{bucket}?versioning`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket?versioning" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+**Response body (XML):**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+```
+
+---
+
+## PutBucketPolicy
+
+Apply an IAM-style JSON resource policy to a bucket.
+
+**`PUT /{bucket}?policy`**
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT "https://minio.example.com/my-bucket?policy" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"AWS": ["*"]},
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::my-bucket/*"]
+    }]
+  }'
+```
+
+```go Go SDK
+policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::my-bucket/*"]}]}`
+err := client.SetBucketPolicy(context.Background(), "my-bucket", policy)
+```
+
+</CodeGroup>
+
+<ParamField body="policy" type="string" required>
+  A JSON document conforming to the IAM policy language. Policy statements define allowed or denied actions on bucket resources.
+</ParamField>
+
+---
+
+## GetBucketPolicy
+
+Retrieve the bucket resource policy.
+
+**`GET /{bucket}?policy`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket?policy" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+**Response:** A JSON policy document, or `404 NoSuchBucketPolicy` if no policy is set.
+
+---
+
+## DeleteBucketPolicy
+
+Remove the resource policy from a bucket.
+
+**`DELETE /{bucket}?policy`**
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE "https://minio.example.com/my-bucket?policy" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+</CodeGroup>
+
+**Response:** `204 No Content` on success.
+
+---
+
+## Bucket limits
+
+| Limit | Value |
+|---|---|
+| Maximum bucket name length | 63 characters |
+| Maximum buckets (recommended) | 500,000 |
+| Maximum objects per bucket | Unlimited |
+| Maximum object versions per key | 10,000 (configurable) |

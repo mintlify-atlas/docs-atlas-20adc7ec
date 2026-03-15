@@ -1,0 +1,251 @@
+---
+title: "TLS configuration"
+description: "Configure MinIO with TLS certificates to enable HTTPS access."
+---
+
+MinIO supports TLS for all server-to-server and client-to-server communication. Enabling TLS requires placing a private key and signed certificate in the MinIO certificate directory.
+
+<Note>
+MinIO only supports keys and certificates in **PEM format**. PFX certificates are not supported.
+</Note>
+
+## Certificate directory
+
+By default MinIO looks for TLS credentials in:
+
+- **Linux/macOS:** `${HOME}/.minio/certs`
+- **Windows:** `%USERPROFILE%\.minio\certs`
+
+To use a custom certificate directory, pass `--certs-dir` when starting the server:
+
+```sh
+minio server --certs-dir /etc/minio/certs /data
+```
+
+### Required file names
+
+The private key must be named `private.key` and the public certificate must be named `public.crt`. No other names are recognised.
+
+```sh
+mc tree --files ~/.minio
+/home/user1/.minio
+└─ certs
+   ├─ CAs
+   ├─ private.key
+   └─ public.crt
+```
+
+## Use an existing certificate
+
+If you already have a key and certificate from a CA, copy them into the certs directory:
+
+<Steps>
+  <Step title="Create the certs directory">
+    ```sh
+    mkdir -p ${HOME}/.minio/certs
+    ```
+  </Step>
+  <Step title="Copy your files">
+    ```sh
+    cp /path/to/your/server.key ${HOME}/.minio/certs/private.key
+    cp /path/to/your/server.crt ${HOME}/.minio/certs/public.crt
+    ```
+  </Step>
+  <Step title="Start MinIO">
+    ```sh
+    minio server /data
+    ```
+
+    MinIO detects the certificates and starts with HTTPS enabled.
+  </Step>
+</Steps>
+
+<Note>
+A certificate signed by a CA contains information about the issued identity and any intermediate certificates. The root CA certificate is not included in `public.crt`.
+</Note>
+
+## Generate a self-signed certificate
+
+<Tabs>
+  <Tab title="certgen">
+    `certgen` is a MinIO tool that generates SAN certificates with DNS and IP entries.
+
+    Download the latest release from [github.com/minio/certgen](https://github.com/minio/certgen/releases/latest), then run:
+
+    ```sh
+    ./certgen -host "10.10.0.3,10.10.0.4,10.10.0.5"
+    ```
+
+    Output:
+    ```
+    2018/11/21 10:16:18 wrote public.crt
+    2018/11/21 10:16:18 wrote private.key
+    ```
+
+    Copy the generated files to the certs directory.
+  </Tab>
+  <Tab title="OpenSSL (ECDSA)">
+    Generate a private key using the `prime256v1` curve:
+
+    ```sh
+    openssl ecparam -genkey -name prime256v1 | openssl ec -out private.key
+    ```
+
+    Then generate a self-signed certificate. First create `openssl.conf`:
+
+    ```ini
+    [req]
+    distinguished_name = req_distinguished_name
+    x509_extensions = v3_req
+    prompt = no
+
+    [req_distinguished_name]
+    C = US
+    ST = VA
+    L = Somewhere
+    O = MyOrg
+    OU = MyOU
+    CN = MyServerName
+
+    [v3_req]
+    subjectAltName = @alt_names
+
+    [alt_names]
+    IP.1 = 127.0.0.1
+    DNS.1 = localhost
+    ```
+
+    Then run:
+
+    ```sh
+    openssl req -new -x509 -nodes -days 730 -keyout private.key -out public.crt -config openssl.conf
+    ```
+  </Tab>
+  <Tab title="OpenSSL (RSA)">
+    Generate a 2048-bit RSA private key:
+
+    ```sh
+    openssl genrsa -out private.key 2048
+    ```
+
+    To generate a password-protected key:
+
+    ```sh
+    openssl genrsa -aes256 -passout pass:PASSWORD -out private.key 2048
+    ```
+
+    <Warning>
+    When using a password-protected private key, provide the password via `MINIO_CERT_PASSWD`:
+
+    ```sh
+    export MINIO_CERT_PASSWD=PASSWORD
+    ```
+
+    MinIO only supports PKCS-1 format for RSA keys. If your key is in PKCS-8 format, convert it:
+
+    ```sh
+    openssl rsa -in private-pkcs8-key.key -aes256 -passout pass:PASSWORD -out private.key
+    ```
+    </Warning>
+  </Tab>
+  <Tab title="GnuTLS (Windows)">
+    Download and install GnuTLS from [gnutls.org](http://www.gnutls.org/download.html) and add it to your PATH.
+
+    Generate a private key:
+
+    ```
+    certtool.exe --generate-privkey --outfile private.key
+    ```
+
+    Create `cert.cnf`:
+
+    ```ini
+    organization = "Example Inc."
+    state = "Example"
+    country = "EX"
+    cn = "MyServer"
+    expiration_days = 365
+    dns_name = "localhost"
+    ip_address = "127.0.0.1"
+    tls_www_server
+    ```
+
+    Generate the certificate:
+
+    ```
+    certtool.exe --generate-self-signed --load-privkey private.key --template cert.cnf --outfile public.crt
+    ```
+  </Tab>
+</Tabs>
+
+## Install certificates from third-party CAs
+
+When MinIO connects to other servers (other MinIO nodes, Redis, NATS, etc.) that use certificates not signed by a publicly trusted CA, install those CA certificates so MinIO trusts them.
+
+Place the CA certificate files in:
+
+- **Linux/macOS:** `~/.minio/certs/CAs/`
+- **Windows:** `C:\Users\<Username>\.minio\certs\CAs`
+
+MinIO loads all certificates found in the `CAs` directory at startup.
+
+## Intermediate CA certificates
+
+If your certificate chain includes intermediate CAs, append them to `public.crt` in order from leaf to root (excluding the self-signed root):
+
+```sh
+cat server.crt intermediate.crt > ${HOME}/.minio/certs/public.crt
+```
+
+## Let's Encrypt
+
+MinIO works with certificates issued by Let's Encrypt. Use Certbot or any ACME client to obtain the certificate, then copy the files to the MinIO certs directory:
+
+```sh
+cp /etc/letsencrypt/live/example.com/privkey.pem ${HOME}/.minio/certs/private.key
+cp /etc/letsencrypt/live/example.com/fullchain.pem ${HOME}/.minio/certs/public.crt
+```
+
+<Tip>
+Let's Encrypt certificates expire every 90 days. Automate renewal with a cron job or systemd timer that copies the renewed certificate and signals MinIO to reload it.
+</Tip>
+
+## Kubernetes TLS setup
+
+On Kubernetes, create a TLS secret from your certificate and key, then mount it into the MinIO pod at the expected path.
+
+<Steps>
+  <Step title="Create the TLS secret">
+    ```sh
+    kubectl create secret tls minio-tls \
+      --cert=public.crt \
+      --key=private.key
+    ```
+  </Step>
+  <Step title="Mount the secret in the MinIO pod">
+    In your pod spec, mount the secret to `/root/.minio/certs`:
+
+    ```yaml
+    volumeMounts:
+      - name: tls-certs
+        mountPath: /root/.minio/certs
+        readOnly: true
+    volumes:
+      - name: tls-certs
+        secret:
+          secretName: minio-tls
+          items:
+            - key: tls.crt
+              path: public.crt
+            - key: tls.key
+              path: private.key
+    ```
+  </Step>
+  <Step title="Start MinIO">
+    MinIO detects the mounted certificate files and enables HTTPS automatically.
+  </Step>
+</Steps>
+
+<Note>
+Kubernetes TLS secrets store the certificate under the key `tls.crt` and the key under `tls.key`. The `items` mapping above renames them to the filenames MinIO requires.
+</Note>

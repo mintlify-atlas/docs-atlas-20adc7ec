@@ -1,0 +1,430 @@
+---
+title: "Object Operations"
+description: "S3-compatible API endpoints for uploading, downloading, copying, and deleting objects in MinIO."
+---
+
+MinIO implements the core AWS S3 object API. All object operations require AWS Signature Version 4 authentication. Object names may be up to 1,024 characters and objects up to 5 TiB can be uploaded in a single PUT.
+
+<Info>
+Objects that contain conflicting parent paths (e.g., a key named `a/b` and another named `a/b/file.txt`) are not supported. Use unique non-conflicting key names.
+</Info>
+
+## PutObject
+
+Upload a single object. For objects larger than 5 GiB, use the [Multipart Upload API](/api/s3/multipart).
+
+**`PUT /{bucket}/{key}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT "https://minio.example.com/my-bucket/photo.jpg" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: image/jpeg' \
+  --data-binary @photo.jpg
+```
+
+```go Go SDK
+uploadInfo, err := client.FPutObject(
+    context.Background(),
+    "my-bucket", "photo.jpg",
+    "/local/path/photo.jpg",
+    minio.PutObjectOptions{ContentType: "image/jpeg"},
+)
+```
+
+</CodeGroup>
+
+<ParamField path="path.bucket" type="string" required>
+  Target bucket name.
+</ParamField>
+
+<ParamField path="path.key" type="string" required>
+  Object key (path). Maximum 1,024 characters.
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  MIME type of the object. Stored as object metadata.
+</ParamField>
+
+<ParamField header="Content-MD5" type="string">
+  Base64-encoded MD5 digest of the object body. Used for integrity verification.
+</ParamField>
+
+<ParamField header="x-amz-server-side-encryption" type="string">
+  Server-side encryption algorithm. Accepted values: `AES256` (SSE-S3), `aws:kms` (SSE-KMS).
+</ParamField>
+
+<ParamField header="x-amz-storage-class" type="string">
+  Storage class for the object. MinIO accepts `STANDARD` and `REDUCED_REDUNDANCY`.
+</ParamField>
+
+<ParamField header="x-amz-tagging" type="string">
+  URL-encoded key-value tag pairs, e.g. `project=docs&env=prod`.
+</ParamField>
+
+<ParamField header="x-amz-meta-*" type="string">
+  User-defined metadata. Each `x-amz-meta-` prefixed header is stored with the object.
+</ParamField>
+
+**Response headers:**
+
+<ResponseField name="ETag" type="string">
+  MD5 checksum (or multipart composite checksum) of the stored object.
+</ResponseField>
+
+<ResponseField name="x-amz-version-id" type="string">
+  Version ID of the object, if bucket versioning is enabled.
+</ResponseField>
+
+---
+
+## GetObject
+
+Download an object or a byte range of it.
+
+**`GET /{bucket}/{key}`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket/photo.jpg" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -o photo.jpg
+```
+
+```go Go SDK
+object, err := client.GetObject(
+    context.Background(),
+    "my-bucket", "photo.jpg",
+    minio.GetObjectOptions{},
+)
+defer object.Close()
+```
+
+</CodeGroup>
+
+<ParamField query="versionId" type="string">
+  Retrieve a specific version of the object.
+</ParamField>
+
+<ParamField header="Range" type="string">
+  Byte range to fetch, e.g. `bytes=0-1023`.
+</ParamField>
+
+<ParamField header="If-Modified-Since" type="string">
+  Return the object only if modified after the given date.
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  Return the object only if the ETag does not match.
+</ParamField>
+
+<ParamField query="response-content-type" type="string">
+  Override the `Content-Type` header in the response.
+</ParamField>
+
+<ParamField query="response-cache-control" type="string">
+  Override the `Cache-Control` header in the response.
+</ParamField>
+
+<ParamField query="response-content-disposition" type="string">
+  Override the `Content-Disposition` header in the response.
+</ParamField>
+
+<ParamField query="response-content-encoding" type="string">
+  Override the `Content-Encoding` header in the response.
+</ParamField>
+
+<ParamField query="response-expires" type="string">
+  Override the `Expires` header in the response.
+</ParamField>
+
+**Response:** Object body as a byte stream with `200 OK`, or `206 Partial Content` for range requests.
+
+---
+
+## HeadObject
+
+Fetch object metadata without downloading the body.
+
+**`HEAD /{bucket}/{key}`**
+
+<CodeGroup>
+
+```bash curl
+curl -I "https://minio.example.com/my-bucket/photo.jpg" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+info, err := client.StatObject(
+    context.Background(),
+    "my-bucket", "photo.jpg",
+    minio.StatObjectOptions{},
+)
+```
+
+</CodeGroup>
+
+<ParamField query="versionId" type="string">
+  Check metadata for a specific version.
+</ParamField>
+
+**Response headers:**
+
+<ResponseField name="Content-Type" type="string">
+  The MIME type stored with the object.
+</ResponseField>
+
+<ResponseField name="Content-Length" type="number">
+  Object size in bytes.
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  MD5 checksum (quoted).
+</ResponseField>
+
+<ResponseField name="Last-Modified" type="string">
+  RFC 7231 timestamp of the last modification.
+</ResponseField>
+
+<ResponseField name="x-amz-version-id" type="string">
+  Version ID if versioning is enabled.
+</ResponseField>
+
+---
+
+## DeleteObject
+
+Delete a single object. When versioning is enabled, this creates a delete marker unless a specific `versionId` is provided.
+
+**`DELETE /{bucket}/{key}`**
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE "https://minio.example.com/my-bucket/photo.jpg" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+err := client.RemoveObject(
+    context.Background(),
+    "my-bucket", "photo.jpg",
+    minio.RemoveObjectOptions{},
+)
+```
+
+</CodeGroup>
+
+<ParamField query="versionId" type="string">
+  Delete a specific version permanently.
+</ParamField>
+
+**Response:** `204 No Content`.
+
+---
+
+## DeleteObjects
+
+Delete up to 1,000 objects in a single request.
+
+**`POST /{bucket}?delete`**
+
+<CodeGroup>
+
+```bash curl
+curl -X POST "https://minio.example.com/my-bucket?delete" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'Content-Type: application/xml' \
+  -d '<Delete><Quiet>true</Quiet><Object><Key>photo.jpg</Key></Object><Object><Key>doc.pdf</Key></Object></Delete>'
+```
+
+```go Go SDK
+objectsCh := make(chan minio.ObjectInfo)
+go func() {
+    defer close(objectsCh)
+    objectsCh <- minio.ObjectInfo{Key: "photo.jpg"}
+    objectsCh <- minio.ObjectInfo{Key: "doc.pdf"}
+}()
+for err := range client.RemoveObjects(context.Background(), "my-bucket", objectsCh, minio.RemoveObjectsOptions{}) {
+    fmt.Println("Error:", err)
+}
+```
+
+</CodeGroup>
+
+<ParamField body="Delete.Quiet" type="boolean" default="false">
+  When `true`, the response only includes errored deletions. When `false`, every object result is returned.
+</ParamField>
+
+<ParamField body="Delete.Object" type="object[]" required>
+  List of objects to delete.
+
+  <Expandable title="properties">
+    <ParamField body="Key" type="string" required>
+      Object key.
+    </ParamField>
+    <ParamField body="VersionId" type="string">
+      Specific version to delete.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="DeleteResult" type="object">
+  Container for deletion results.
+
+  <Expandable title="properties">
+    <ResponseField name="Deleted" type="object[]">
+      Objects that were successfully deleted.
+    </ResponseField>
+    <ResponseField name="Error" type="object[]">
+      Objects that could not be deleted, with `Code` and `Message`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## CopyObject
+
+Create a copy of an existing object within the same or a different bucket, optionally replacing its metadata.
+
+**`PUT /{bucket}/{key}`** with `x-amz-copy-source` header
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT "https://minio.example.com/dest-bucket/copy-of-photo.jpg" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  -H 'x-amz-copy-source: /my-bucket/photo.jpg'
+```
+
+```go Go SDK
+src := minio.CopySrcOptions{Bucket: "my-bucket", Object: "photo.jpg"}
+dst := minio.CopyDestOptions{Bucket: "dest-bucket", Object: "copy-of-photo.jpg"}
+uploadInfo, err := client.CopyObject(context.Background(), dst, src)
+```
+
+</CodeGroup>
+
+<ParamField header="x-amz-copy-source" type="string" required>
+  Path to the source object in the form `/source-bucket/source-key`. URL-encode the path if the key contains special characters.
+</ParamField>
+
+<ParamField header="x-amz-copy-source-if-match" type="string">
+  Copy only if the source object ETag matches.
+</ParamField>
+
+<ParamField header="x-amz-metadata-directive" type="string" default="COPY">
+  `COPY` preserves source metadata; `REPLACE` uses metadata from the request headers.
+</ParamField>
+
+<ParamField header="x-amz-tagging-directive" type="string" default="COPY">
+  `COPY` preserves source tags; `REPLACE` uses tags from the request `x-amz-tagging` header.
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="CopyObjectResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="ETag" type="string">ETag of the new object.</ResponseField>
+    <ResponseField name="LastModified" type="string">Modification timestamp of the new object.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## ListObjectsV2
+
+List objects in a bucket. Returns up to 1,000 objects per call.
+
+**`GET /{bucket}?list-type=2`**
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket?list-type=2&prefix=photos/&max-keys=50" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "ACCESS_KEY:SECRET_KEY"
+```
+
+```go Go SDK
+for object := range client.ListObjects(context.Background(), "my-bucket", minio.ListObjectsOptions{
+    Prefix: "photos/",
+    Recursive: true,
+}) {
+    if object.Err != nil {
+        log.Fatal(object.Err)
+    }
+    fmt.Println(object.Key)
+}
+```
+
+</CodeGroup>
+
+<ParamField query="prefix" type="string">
+  Limit results to keys that begin with this prefix.
+</ParamField>
+
+<ParamField query="delimiter" type="string">
+  Group keys containing this character into `CommonPrefixes`.
+</ParamField>
+
+<ParamField query="max-keys" type="number" default="1000">
+  Maximum number of objects to return. Maximum allowed value is 1,000.
+</ParamField>
+
+<ParamField query="continuation-token" type="string">
+  Pagination token from a previous response's `NextContinuationToken`.
+</ParamField>
+
+<ParamField query="start-after" type="string">
+  Start listing after this key.
+</ParamField>
+
+<ParamField query="fetch-owner" type="boolean" default="false">
+  Include owner information in the response.
+</ParamField>
+
+**Response body (XML):**
+
+<ResponseField name="ListBucketResult" type="object">
+  <Expandable title="properties">
+    <ResponseField name="Contents" type="object[]">
+      List of matching objects, each with `Key`, `Size`, `ETag`, `LastModified`, and `StorageClass`.
+    </ResponseField>
+    <ResponseField name="CommonPrefixes" type="object[]">
+      Grouped prefixes when a `delimiter` is specified.
+    </ResponseField>
+    <ResponseField name="IsTruncated" type="boolean">
+      `true` when the result set was truncated.
+    </ResponseField>
+    <ResponseField name="NextContinuationToken" type="string">
+      Token to retrieve the next page; present only when `IsTruncated` is `true`.
+    </ResponseField>
+    <ResponseField name="KeyCount" type="number">
+      Number of keys returned in this response.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Object limits
+
+| Limit | Value |
+|---|---|
+| Maximum object size | 50 TiB |
+| Maximum single PUT object size | 5 TiB |
+| Maximum object key length | 1,024 characters |
+| Maximum objects returned per list request | 1,000 |

@@ -1,0 +1,343 @@
+---
+title: "Object Lifecycle Management"
+description: "Configure expiration and transition rules to automatically manage object storage costs and retention using MinIO ILM."
+---
+
+MinIO's Information Lifecycle Management (ILM) allows you to define rules that automatically **expire** (delete) or **transition** (move to a different storage tier) objects based on age, prefix, or tags. This reduces storage costs and automates retention enforcement without manual intervention.
+
+## Lifecycle configuration format
+
+Lifecycle rules are defined as a JSON document compatible with the AWS S3 Lifecycle Configuration specification. The document contains one or more `Rules`, each with a unique `ID`, a `Filter` (prefix and/or tags), and an action (`Expiration` or `Transition`).
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "expire-old-logs",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "logs/"
+      },
+      "Expiration": {
+        "Days": 90
+      }
+    }
+  ]
+}
+```
+
+## Expiration rules
+
+Expiration rules delete objects (or specific versions in versioned buckets) after a specified number of days or on a specific date.
+
+### Delete objects after N days
+
+```json
+{
+  "Rules": [
+    {
+      "Expiration": {
+        "Days": 7
+      },
+      "ID": "TempUploads",
+      "Filter": {
+        "Prefix": "temp/"
+      },
+      "Status": "Enabled"
+    }
+  ]
+}
+```
+
+Equivalent `mc ilm` command:
+
+```sh
+mc ilm rule add --expire-days 7 --prefix "temp/" myminio/mybucket
+```
+
+### Delete objects on a specific date
+
+```json
+{
+  "Rules": [
+    {
+      "Expiration": {
+        "Date": "2020-01-01T00:00:00.000Z"
+      },
+      "ID": "OldPictures",
+      "Filter": {
+        "Prefix": "old/"
+      },
+      "Status": "Enabled"
+    }
+  ]
+}
+```
+
+## Importing and listing rules with mc ilm
+
+### Import a lifecycle configuration
+
+```sh
+mc ilm import myminio/mybucket <<EOF
+{
+  "Rules": [
+    {
+      "Expiration": { "Date": "2020-01-01T00:00:00.000Z" },
+      "ID": "OldPictures",
+      "Filter": { "Prefix": "old/" },
+      "Status": "Enabled"
+    },
+    {
+      "Expiration": { "Days": 7 },
+      "ID": "TempUploads",
+      "Filter": { "Prefix": "temp/" },
+      "Status": "Enabled"
+    }
+  ]
+}
+EOF
+```
+
+### List active rules
+
+```sh
+mc ilm ls myminio/mybucket
+```
+
+Example output:
+
+```
+     ID     |  Prefix  |  Enabled   | Expiry |  Date/Days   |  Transition  |    Date/Days     |  Storage-Class   |       Tags
+------------|----------|------------|--------|--------------|--------------|------------------|------------------|------------------
+OldPictures |   old/   |    ✓       |  ✓     |  1 Jan 2020  |     ✗        |                  |                  |
+------------|----------|------------|--------|--------------|--------------|------------------|------------------|------------------
+TempUploads |  temp/   |    ✓       |  ✓     |   7 day(s)   |     ✗        |                  |                  |
+```
+
+### List rules (newer CLI)
+
+```sh
+mc ilm rule list myminio/mybucket
+```
+
+## Versioned bucket lifecycle
+
+In versioned buckets, expiration rules can target noncurrent (older) versions independently from the current version.
+
+### Remove noncurrent versions after N days
+
+Objective: scan objects under `user-uploads/` and remove versions older than one year.
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Removing all old versions",
+      "Filter": {
+        "Prefix": "users-uploads/"
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 365
+      },
+      "Status": "Enabled"
+    }
+  ]
+}
+```
+
+Equivalent `mc ilm` command:
+
+```sh
+mc ilm rule add --noncurrent-expire-days 365 --prefix "user-uploads/" myminio/mybucket
+```
+
+### Keep only the most recent N noncurrent versions
+
+Remove noncurrent versions of objects under `user-uploads/` 30 days after they become noncurrent, but always keep the most recent 5 noncurrent versions:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Keep only most recent 5 noncurrent versions",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "users-uploads/"
+      },
+      "NoncurrentVersionExpiration": {
+        "NewerNoncurrentVersions": 5,
+        "NoncurrentDays": 30
+      }
+    }
+  ]
+}
+```
+
+Equivalent `mc ilm` command:
+
+```sh
+mc ilm rule add \
+  --noncurrent-expire-days 30 \
+  --noncurrent-expire-newer 5 \
+  --prefix "user-uploads/" \
+  myminio/mybucket
+```
+
+### Immediate removal of excess noncurrent versions (MinIO extension)
+
+This MinIO-only extension removes older noncurrent versions immediately as soon as more than `N` noncurrent versions exist for an object, without waiting for a `NoncurrentDays` threshold:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Keep only most recent 5 noncurrent versions",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "users-uploads/"
+      },
+      "NoncurrentVersionExpiration": {
+        "NewerNoncurrentVersions": 5
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  The implicit `NoncurrentDays: 0` in this rule means the excess versions are deleted immediately when the count exceeds the limit.
+</Note>
+
+### Expire all versions of an object at once (MinIO extension)
+
+This MinIO extension removes all versions of an object as soon as the latest version satisfies the expiration criteria:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Purge all versions of an expired object",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "users-uploads/"
+      },
+      "Expiration": {
+        "Days": 7,
+        "ExpiredObjectAllVersions": true
+      }
+    }
+  ]
+}
+```
+
+### Remove orphaned delete markers
+
+When an object has only a delete marker left (no other versions), that marker can be cleaned up automatically:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Removing all delete markers",
+      "Expiration": {
+        "ExpiredObjectDeleteMarker": true
+      },
+      "Status": "Enabled"
+    }
+  ]
+}
+```
+
+## Transition rules (ILM tiering)
+
+Transition rules move objects to a remote storage tier after a specified number of days. MinIO supports tiering to AWS S3, Google Cloud Storage, Azure Blob Storage, and other MinIO clusters.
+
+<Steps>
+  <Step title="Create a storage tier">
+    Add a tier pointing to the remote storage target. The example below creates an Azure tier:
+
+    ```sh
+    mc admin tier add azure myminio AZURETIER \
+      --endpoint https://blob.core.windows.net \
+      --access-key AZURE_ACCOUNT_NAME \
+      --secret-key AZURE_ACCOUNT_KEY \
+      --bucket azurebucket \
+      --prefix testprefix/
+    ```
+
+    For AWS S3 using an IAM role attached to an EC2 instance instead of static credentials:
+
+    ```sh
+    mc admin tier add s3 myminio S3TIER \
+      --bucket s3bucket \
+      --prefix testprefix/ \
+      --use-aws-role
+    ```
+
+    For another MinIO cluster as a warm tier:
+
+    ```sh
+    mc ilm tier add minio myminio WARM-TIER \
+      --endpoint http://minio-warm:9000 \
+      --access-key minioadmin \
+      --secret-key minioadmin \
+      --bucket warm-bucket
+    ```
+  </Step>
+  <Step title="Add an ILM transition rule">
+    Move objects older than 45 days to the `AZURETIER` storage class and expire them after 365 days:
+
+    ```sh
+    mc ilm add \
+      --expiry-days 365 \
+      --transition-days 45 \
+      --storage-class "AZURETIER" \
+      myminio/srcbucket
+    ```
+
+    To transition objects immediately (0 days), for testing:
+
+    ```sh
+    mc ilm add \
+      --transition-days 0 \
+      --transition-tier WARM-TIER \
+      myminio/mybucket
+    ```
+  </Step>
+</Steps>
+
+### Accessing transitioned objects
+
+Once an object is transitioned, `GET` and `HEAD` requests stream the content directly from the remote tier. To temporarily restore an object to the local cluster, use the AWS RestoreObject API:
+
+```sh
+aws s3api restore-object \
+  --bucket srcbucket \
+  --key myobject \
+  --restore-request Days=3
+```
+
+### Monitoring transition events
+
+MinIO emits `s3:ObjectTransition:Complete` and `s3:ObjectTransition:Failed` events for ILM transitions. To watch these events, enable bucket notifications with the `--event ilm` filter:
+
+```sh
+mc event add myminio/srcbucket <arn> --event ilm
+```
+
+<Note>
+  Transition event notifications are a MinIO-only extension and are not part of the AWS S3 specification.
+</Note>
+
+## mc ilm command reference
+
+| Command | Description |
+|---|---|
+| `mc ilm import <alias>/<bucket>` | Import a lifecycle configuration from stdin |
+| `mc ilm ls <alias>/<bucket>` | List lifecycle rules |
+| `mc ilm rule list <alias>/<bucket>` | List lifecycle rules (newer CLI) |
+| `mc ilm rule add --expire-days <n> <alias>/<bucket>` | Add an expiration rule |
+| `mc ilm rule add --noncurrent-expire-days <n> <alias>/<bucket>` | Add a noncurrent version expiration rule |
+| `mc ilm add --transition-days <n> --storage-class <tier> <alias>/<bucket>` | Add a transition rule |
+| `mc admin tier add <provider> <alias> <name> ...` | Add a remote storage tier |

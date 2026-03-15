@@ -1,0 +1,161 @@
+---
+title: "Configuration overview"
+description: "How MinIO is configured using environment variables and the mc admin config command."
+---
+
+MinIO uses two complementary mechanisms for configuration: **environment variables** set at startup and a **runtime configuration store** managed via `mc admin config`. Understanding when each method applies helps you manage deployments predictably.
+
+## How configuration works
+
+MinIO stores all configuration as part of the server deployment itself — the config is erasure-coded alongside your data, not in a separate file on disk. On a fresh deployment MinIO automatically generates a default configuration.
+
+When both an environment variable and a `mc admin config` value exist for the same setting, **environment variables take precedence**.
+
+<Note>
+If you configure any sub-system using environment variables, runtime changes to that sub-system via `mc admin config` are not applied until the environment variable is removed and the server is restarted.
+</Note>
+
+## Environment variables vs. mc admin config
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="terminal">
+    Set at server startup. Required for root credentials. Take precedence over stored config. Suitable for container and systemd deployments.
+  </Card>
+  <Card title="mc admin config" icon="sliders">
+    Applied at runtime without restarts for supported sub-systems. Stored encrypted in the MinIO backend. Suitable for operational changes on running clusters.
+  </Card>
+</CardGroup>
+
+### Setting credentials via environment variables
+
+Root credentials **must** be set using environment variables. They cannot be changed through `mc admin config`.
+
+```sh
+export MINIO_ROOT_USER=minio
+export MINIO_ROOT_PASSWORD=minio13
+minio server /data
+```
+
+## Config persistence
+
+Configuration is stored encrypted inside the MinIO deployment (erasure-coded across drives). If KMS is configured, all config, IAM assets, and policies are encrypted at rest. There is no separate config file to back up independently — the config travels with the deployment.
+
+The certificate directory is separate and stored on the local filesystem at `${HOME}/.minio/certs` by default. You can override this with the `--certs-dir` flag.
+
+## Runtime vs. startup configuration
+
+Some sub-systems are **dynamic**: their configuration can be changed while the server is running without any restart.
+
+Dynamic sub-systems:
+
+| Sub-system | Description |
+|---|---|
+| `api` | HTTP API throttling, authentication types, and request limits |
+| `heal` | Object healing frequency and bitrot verification |
+| `scanner` | Namespace scanning for usage calculation and lifecycle |
+
+All other sub-systems require a server restart after configuration changes.
+
+## Using mc admin config
+
+### List all available config keys
+
+```sh
+mc admin config set myminio/
+```
+
+### Get the current value of a sub-system
+
+```sh
+mc admin config get myminio/ api
+```
+
+### Set a config value
+
+```sh
+mc admin config set myminio/ api requests_max=1600
+```
+
+### Show help for a specific key
+
+```sh
+mc admin config set myminio/ compression
+```
+
+This prints all available arguments and their types for the `compression` sub-system.
+
+### Show the equivalent environment variable names
+
+Add `--env` to any `mc admin config set` command to see the corresponding `MINIO_*` environment variable names:
+
+```sh
+mc admin config set myminio/ compression --env
+```
+
+Output:
+
+```
+KEY:
+compression  enable server side compression of objects
+
+ARGS:
+MINIO_COMPRESSION_ENABLE           (on|off)  enable or disable compression
+MINIO_COMPRESSION_ALLOW_ENCRYPTION (on|off)  allow compression of encrypted objects
+MINIO_COMPRESSION_EXTENSIONS       (csv)     comma-separated list of file extensions to compress
+MINIO_COMPRESSION_MIME_TYPES       (csv)     comma-separated list of MIME types to compress
+```
+
+### Export and import configuration
+
+You can export and import the full server configuration using:
+
+```sh
+mc admin config export myminio/ > config-backup.txt
+mc admin config import myminio/ < config-backup.txt
+```
+
+### Reset a sub-system to defaults
+
+```sh
+mc admin config reset myminio/ api
+```
+
+## Configuration sub-systems
+
+MinIO organises configuration into named sub-systems. Each sub-system controls a distinct area of server behaviour.
+
+<AccordionGroup>
+  <Accordion title="Core sub-systems">
+    | Sub-system | Description |
+    |---|---|
+    | `site` | Server name and region |
+    | `api` | HTTP API throttling, CORS, and request management |
+    | `storage_class` | Erasure coding parity for standard and RRS storage classes |
+    | `compression` | Object compression settings |
+    | `heal` | Self-healing frequency and bitrot scanning |
+    | `scanner` | Namespace scanning for usage and lifecycle |
+  </Accordion>
+  <Accordion title="Identity and access sub-systems">
+    | Sub-system | Description |
+    |---|---|
+    | `identity_openid` | OpenID Connect SSO |
+    | `identity_ldap` | LDAP/Active Directory SSO |
+    | `identity_tls` | X.509 certificate-based SSO |
+    | `identity_plugin` | External identity plugin |
+    | `policy_plugin` | External access management plugin |
+  </Accordion>
+  <Accordion title="Notification sub-systems">
+    MinIO supports publishing bucket event notifications to a range of external targets, including `notify_webhook`, `notify_amqp`, `notify_kafka`, `notify_mqtt`, `notify_nats`, `notify_nsq`, `notify_mysql`, `notify_postgres`, `notify_elasticsearch`, and `notify_redis`.
+  </Accordion>
+</AccordionGroup>
+
+## MINIO_CONFIG_ENV_FILE
+
+You can consolidate all environment variables into a single file and point MinIO to it:
+
+```sh
+export MINIO_CONFIG_ENV_FILE=/etc/minio/config.env
+minio server /data
+```
+
+Values in this file override all other environment values, including those passed via `docker run -e` or systemd unit files.

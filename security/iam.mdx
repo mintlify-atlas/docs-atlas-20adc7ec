@@ -1,0 +1,260 @@
+---
+title: "Identity and Access Management"
+description: "Manage MinIO users, groups, service accounts, and federated identity through LDAP and OpenID Connect."
+---
+
+MinIO provides a built-in IAM system for managing identities and their access to object storage. When LDAP is configured, internal long-term users are disabled and Active Directory / LDAP users take over. OpenID Connect (OIDC) can be configured in parallel with either mode.
+
+## Identity modes
+
+<Tabs>
+  <Tab title="Built-in users">
+    MinIO's native user system stores users, groups, and policy mappings alongside object data. Use `mc admin user` and `mc admin group` to manage identities.
+
+    Users in this mode have a permanent access key and secret key pair.
+  </Tab>
+  <Tab title="LDAP / Active Directory">
+    When `MINIO_IDENTITY_LDAP_SERVER_ADDR` is set, MinIO switches to `LDAPUsersSys` mode. Internal long-term users are disabled. Only LDAP users (and the root user) can authenticate.
+
+    `mc admin user` and `mc admin group` commands are not available in this mode, except for `mc admin user info` and `mc admin group info`.
+  </Tab>
+  <Tab title="OpenID Connect">
+    OpenID Connect can be layered on top of either mode. OIDC users obtain temporary credentials via the STS `AssumeRoleWithWebIdentity` API. Multiple OIDC providers can be configured simultaneously.
+  </Tab>
+</Tabs>
+
+## Built-in user management
+
+### Creating users
+
+<Steps>
+  <Step title="Start MinIO with root credentials">
+    ```bash
+    export MINIO_ROOT_USER=minio
+    export MINIO_ROOT_PASSWORD=minio123
+    minio server ~/data
+    ```
+  </Step>
+  <Step title="Configure an mc alias">
+    ```bash
+    mc alias set myminio http://localhost:9000 minio minio123
+    ```
+  </Step>
+  <Step title="Create a new user">
+    ```bash
+    mc admin user add myminio newuser newuser123
+    ```
+  </Step>
+  <Step title="Create a policy file">
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetObject"],
+          "Resource": ["arn:aws:s3:::my-bucketname/*"]
+        }
+      ]
+    }
+    ```
+  </Step>
+  <Step title="Upload the policy">
+    ```bash
+    mc admin policy create myminio getonly getonly.json
+    ```
+  </Step>
+  <Step title="Attach the policy to the user">
+    ```bash
+    mc admin policy attach myminio getonly --user=newuser
+    ```
+  </Step>
+</Steps>
+
+### Managing users
+
+```bash
+# List all users
+mc admin user list myminio
+
+# Disable a user
+mc admin user disable myminio newuser
+
+# Re-enable a user
+mc admin user enable myminio newuser
+
+# Remove a user
+mc admin user remove myminio newuser
+```
+
+## Groups
+
+Groups collect users so that a single policy attachment covers all members.
+
+```bash
+# Create a group and add a user to it
+mc admin group add myminio newgroup newuser
+
+# Attach a policy to the group
+mc admin policy attach myminio getonly --group=newgroup
+
+# List groups
+mc admin group list myminio
+
+# Disable a group (members lose access until re-enabled)
+mc admin group disable myminio newgroup
+
+# Remove a user from a group
+mc admin group remove myminio newgroup newuser
+
+# Remove an entire group
+mc admin group remove myminio newgroup
+```
+
+## Service accounts
+
+Service accounts (also called access keys) are scoped credentials derived from a parent IAM user or STS session. They are useful for applications that need a stable key pair without exposing root or IAM user credentials.
+
+```bash
+# Create a service account for an IAM user
+mc admin user svcacct add myminio newuser
+
+# List service accounts for a user
+mc admin user svcacct list myminio newuser
+
+# Remove a service account
+mc admin user svcacct rm myminio <access-key>
+```
+
+Service account session policies are limited to 4,096 bytes and cannot grant more permissions than the parent user's policy.
+
+## LDAP / Active Directory integration
+
+LDAP configuration is done via environment variables or `mc admin config set`.
+
+```bash
+export MINIO_IDENTITY_LDAP_SERVER_ADDR=myldapserver.com:636
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN='cn=admin,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD=admin
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN='ou=users,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(uid=%s)'
+```
+
+<Warning>
+MinIO sends LDAP credentials to the LDAP server for validation. Always use TLS or StartTLS between MinIO and the LDAP server. Plain-text connections expose credentials to anyone on the network.
+</Warning>
+
+### All LDAP environment variables
+
+```bash
+MINIO_IDENTITY_LDAP_SERVER_ADDR*            # AD/LDAP server address, e.g. myldap.com:636
+MINIO_IDENTITY_LDAP_SRV_RECORD_NAME        # DNS SRV record name: ldap, ldaps, or on
+MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN         # DN for read-only service account
+MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD   # Password for read-only service account
+MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN # Semicolon-separated list of search base DNs
+MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER  # Filter to look up user DN (%s = username)
+MINIO_IDENTITY_LDAP_USER_DN_ATTRIBUTES     # Comma-separated additional DN attributes
+MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER    # Group membership filter (%s = username, %d = user DN)
+MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN   # Semicolon-separated list of group search base DNs
+MINIO_IDENTITY_LDAP_TLS_SKIP_VERIFY        # Trust server TLS without verification (off)
+MINIO_IDENTITY_LDAP_SERVER_INSECURE        # Allow plain-text connection (off)
+MINIO_IDENTITY_LDAP_SERVER_STARTTLS        # Use StartTLS (off)
+```
+
+### Attaching policies to LDAP users and groups
+
+```bash
+# Attach to an LDAP user
+mc idp ldap policy attach myminio mypolicy \
+  --user='uid=james,cn=accounts,dc=myldapserver,dc=com'
+
+# Attach to an LDAP group
+mc idp ldap policy attach myminio mypolicy \
+  --group='cn=projectx,ou=groups,dc=min,dc=io'
+
+# Detach a policy
+mc idp ldap policy detach myminio mypolicy \
+  --user='uid=james,cn=accounts,dc=myldapserver,dc=com'
+```
+
+<Note>
+By default, no policy is set on an LDAP user. Even after successful authentication, users have no access to object storage until a policy is attached.
+</Note>
+
+### Automatic LDAP sync
+
+MinIO periodically queries the LDAP server to:
+
+- Detect removed accounts and purge their active STS credentials and service accounts.
+- Detect group membership changes and update the policies available to each credential immediately.
+
+### Nested groups in Active Directory
+
+For nested group lookups, use the `LDAP_MATCHING_RULE_IN_CHAIN` OID:
+
+```bash
+MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER='(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=%d))'
+MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(&(memberOf:1.2.840.113556.1.4.1941:=CN=group,DC=dc,DC=net)(sAMAccountName=%s))'
+```
+
+## OpenID Connect integration
+
+OpenID Connect (OIDC) allows users to authenticate with an external identity provider (Keycloak, Dex, Google, etc.) and receive temporary STS credentials.
+
+### Configuration
+
+```bash
+export MINIO_IDENTITY_OPENID_CONFIG_URL=https://accounts.google.com/.well-known/openid-configuration
+export MINIO_IDENTITY_OPENID_CLIENT_ID="843351d4-1080-11ea-aa20-271ecba3924a"
+export MINIO_IDENTITY_OPENID_CLIENT_SECRET="your-client-secret"
+export MINIO_IDENTITY_OPENID_ROLE_POLICY="readwrite"
+minio server /mnt/data
+```
+
+### All OpenID environment variables
+
+```bash
+MINIO_IDENTITY_OPENID_ENABLE*              # Enable this provider (on|off)
+MINIO_IDENTITY_OPENID_DISPLAY_NAME        # Friendly name shown on the login page
+MINIO_IDENTITY_OPENID_CONFIG_URL*         # OIDC discovery document URL
+MINIO_IDENTITY_OPENID_CLIENT_ID*          # OAuth2 client ID
+MINIO_IDENTITY_OPENID_CLIENT_SECRET*      # OAuth2 client secret
+MINIO_IDENTITY_OPENID_ROLE_POLICY         # IAM policies to apply (recommended)
+MINIO_IDENTITY_OPENID_CLAIM_NAME          # JWT claim carrying the policy name (default: policy)
+MINIO_IDENTITY_OPENID_SCOPES              # Comma-separated OpenID scopes
+MINIO_IDENTITY_OPENID_CLAIM_USERINFO      # Fetch claims from UserInfo endpoint (on|off)
+MINIO_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC # Dynamic redirect URI from Host header (on|off)
+MINIO_IDENTITY_OPENID_VENDOR              # Vendor hint (e.g. keycloak)
+MINIO_IDENTITY_OPENID_KEYCLOAK_REALM      # Keycloak realm name
+MINIO_IDENTITY_OPENID_KEYCLOAK_ADMIN_URL  # Keycloak admin REST API endpoint
+```
+
+### Multiple OIDC providers
+
+To configure a second OIDC provider, append a suffix (e.g. `_APP2`) to each variable:
+
+```bash
+MINIO_IDENTITY_OPENID_CONFIG_URL=http://provider1.example.com/.well-known/openid-configuration
+MINIO_IDENTITY_OPENID_CLIENT_ID=client-app-1
+MINIO_IDENTITY_OPENID_ROLE_POLICY=consoleAdmin
+
+MINIO_IDENTITY_OPENID_CONFIG_URL_APP2=http://provider2.example.com/.well-known/openid-configuration
+MINIO_IDENTITY_OPENID_CLIENT_ID_APP2=client-app-2
+MINIO_IDENTITY_OPENID_ROLE_POLICY_APP2=readwrite
+```
+
+<Tip>
+Use `MINIO_IDENTITY_OPENID_ROLE_POLICY` (role policy mode) rather than `MINIO_IDENTITY_OPENID_CLAIM_NAME` (JWT claim mode). Role policy mode supports multiple providers and avoids relying on token contents for policy selection.
+</Tip>
+
+## Access Management Plugin
+
+MinIO can delegate every authorization decision to an external HTTP webhook:
+
+```bash
+export MINIO_POLICY_PLUGIN_URL=http://localhost:8181/v1/data/httpapi/authz/allow
+```
+
+On every authenticated API call, MinIO POSTs a JSON body with the account, action, bucket, and conditions. The webhook returns `{"result": true}` to allow or `{"result": false}` to deny. This is compatible with OPA (Open Policy Agent).
+
+See [access-management-plugin.md](https://github.com/minio/minio/blob/master/docs/iam/access-management-plugin.md) for the full request/response schema.

@@ -1,0 +1,178 @@
+---
+title: "Server Pool Decommissioning"
+description: "Drain and retire a MinIO server pool by migrating all data to remaining pools in the deployment."
+---
+
+Decommissioning is the process of draining an existing server pool so that its data is fully migrated to the remaining pools. It is primarily used to retire aging hardware—replacing an older pool with a newer, higher-capacity pool—without any downtime or data loss.
+
+## How decommissioning works
+
+When a pool is placed in decommission, MinIO:
+
+1. Stops directing **new writes** to the decommissioning pool. All write operations go to the remaining active pools.
+2. Continues to serve **reads** from the decommissioning pool for all objects that have not yet migrated.
+3. Progressively moves all objects from the decommissioning pool to the remaining pools in the background.
+4. Preserves the **version ordering** of all versioned objects throughout the migration.
+5. Resumes from where it left off if the cluster is restarted during decommissioning.
+
+<Warning>
+  Decommissioning is a planned, one-way operation. Canceling a decommission does **not** make the pool active again, because data may have already been partially migrated to other pools. Only start decommissioning when you are certain the pool should be retired.
+</Warning>
+
+## When to use decommissioning vs rebalancing
+
+| Scenario | Recommended approach |
+|---|---|
+| Retiring old hardware and replacing with a new pool | Decommissioning |
+| Redistributing data across existing pools without retiring any | Rebalancing (`mc admin rebalance`) |
+| Expanding capacity by adding a new pool | Add pool to `MINIO_VOLUMES` and restart |
+
+## Starting decommission
+
+To start decommissioning a specific pool, pass the pool's endpoint pattern to `mc admin decommission start`:
+
+```sh
+mc admin decommission start alias/ http://minio{1...2}/data{1...4}
+```
+
+MinIO identifies the pool by matching the endpoint pattern against the pools in the running configuration.
+
+## Monitoring decommission progress
+
+### List all pools and their status
+
+```sh
+mc admin decommission status alias/
+```
+
+Example output:
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Active │
+│ 2nd │ http://minio{3...4}/data{1...4} │ 329 GiB (used) / 421 GiB (total) │ Active │
+└─────┴─────────────────────────────────┴──────────────────────────────────┘
+```
+
+### Check progress on a specific pool
+
+```sh
+mc admin decommission status alias/ http://minio{1...2}/data{1...4}
+```
+
+Example output while in progress:
+
+```
+Decommissioning rate at 36 MiB/sec [4 TiB/50 TiB]
+Started: 1 minute ago
+```
+
+Once complete:
+
+```
+Decommission of pool http://minio{1...2}/data{1...4} is complete, you may now remove it from server command line
+```
+
+## Canceling a decommission
+
+To stop an in-progress decommission:
+
+```sh
+# List pools currently draining
+mc admin decommission cancel alias/
+```
+
+Example output:
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬──────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status   │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Draining │
+└─────┴─────────────────────────────────┴──────────────────────────────────┘
+```
+
+Cancel a specific pool:
+
+```sh
+mc admin decommission cancel alias/ http://minio{1...2}/data{1...4}
+```
+
+The pool status becomes `Draining(Canceled)`.
+
+### Restarting a canceled or failed decommission
+
+If a decommission is canceled or fails, it can be restarted:
+
+```sh
+mc admin decommission start alias/ http://minio{1...2}/data{1...4}
+```
+
+The decommission resumes from where it stopped.
+
+## Removing a pool after decommission completes
+
+Once `mc admin decommission status` reports **Complete**, remove the pool from the server configuration.
+
+Example final status:
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬──────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status   │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Complete │
+│ 2nd │ http://minio{3...4}/data{1...4} │ 329 GiB (used) / 421 GiB (total) │ Active   │
+└─────┴─────────────────────────────────┴──────────────────────────────────┘
+```
+
+<Tabs>
+  <Tab title="Bare metal (systemd)">
+    Remove the decommissioned pool from `MINIO_VOLUMES`:
+
+    ```sh
+    # Before:
+    MINIO_VOLUMES="http://minio{1...2}/data{1...4} http://minio{3...4}/data{1...4}"
+
+    # After:
+    MINIO_VOLUMES="http://minio{3...4}/data{1...4}"
+    ```
+
+    Restart all servers in parallel:
+
+    ```sh
+    systemctl restart minio
+    ```
+  </Tab>
+  <Tab title="Kubernetes (StatefulSet)">
+    Modify the StatefulSet command-line input for the MinIO container to remove the decommissioned pool endpoint, then apply the change:
+
+    ```sh
+    kubectl apply -f statefulset.yaml
+    ```
+  </Tab>
+  <Tab title="Kubernetes (Operator)">
+    Modify the `pools:` section of `tenant.yaml` from two entries to a single entry, then apply:
+
+    ```sh
+    kubectl apply -f tenant.yaml
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  A pool cannot be removed from the configuration until its status shows **Complete**. Pools in `Active` or `Draining` state must remain in `MINIO_VOLUMES`.
+</Warning>
+
+## Known limitations
+
+- Empty delete markers (objects with no other successor versions) do not migrate to the new pool. This avoids creating empty metadata entries on the remaining pools.
+- Buckets with ILM Transition (tiering) rules are currently not supported for decommissioning. Attempting to decommission such buckets will be rejected by the server.
+
+## mc admin decommission command reference
+
+| Command | Description |
+|---|---|
+| `mc admin decommission start <alias>/ <pool>` | Start decommissioning a pool |
+| `mc admin decommission status <alias>/` | List all pools and their status |
+| `mc admin decommission status <alias>/ <pool>` | Show progress for a specific pool |
+| `mc admin decommission cancel <alias>/` | List pools currently draining |
+| `mc admin decommission cancel <alias>/ <pool>` | Cancel decommissioning of a pool |

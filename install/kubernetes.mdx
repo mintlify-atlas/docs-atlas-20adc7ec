@@ -1,0 +1,175 @@
+---
+title: "Kubernetes deployment"
+description: "Deploy MinIO on Kubernetes using the MinIO Operator or the community Helm chart."
+---
+
+MinIO supports two paths for Kubernetes deployment: the **MinIO Operator** (officially maintained) and the **community Helm chart** (community maintained). Both are covered here.
+
+<Warning>
+  The community Helm chart is maintained by the MinIO community, not by MinIO Inc. MinIO strongly recommends the **MinIO Operator** for production deployments.
+</Warning>
+
+## Choosing a deployment path
+
+<CardGroup cols={2}>
+  <Card title="MinIO Operator" icon="shield-check">
+    Officially supported. Manages MinIO Tenants as Kubernetes CRDs. Recommended for production. See the [MinIO Operator repository](https://github.com/minio/operator).
+  </Card>
+  <Card title="Community Helm chart" icon="helm">
+    Community maintained chart in the MinIO repository. Good for quick evaluations. No production SLA from MinIO Inc.
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+- Kubernetes **v1.19 or later**
+- `helm` CLI configured against the target cluster
+- PersistentVolume (PV) provisioner available in the cluster (MinIO recommends [DirectCSI](https://github.com/minio/direct-csi))
+
+## Community Helm chart
+
+### Add the Helm repository
+
+```bash
+helm repo add minio https://charts.min.io/
+```
+
+### Install the chart
+
+Deploy MinIO with custom root credentials:
+
+```bash
+helm install \
+  --namespace minio \
+  --set rootUser=rootuser,rootPassword=rootpass123 \
+  --generate-name \
+  minio/minio
+```
+
+<Note>
+  The chart defaults to `mode: distributed`. For a quick single-node test, use the toy-setup flags below.
+</Note>
+
+### Toy setup (non-production)
+
+Minimal deployment for local testing with a single replica and no persistent storage:
+
+```bash
+helm install \
+  --set resources.requests.memory=512Mi \
+  --set replicas=1 \
+  --set persistence.enabled=false \
+  --set mode=standalone \
+  --set rootUser=rootuser,rootPassword=rootpass123 \
+  --generate-name \
+  minio/minio
+```
+
+### Key configuration values
+
+Pass these with `--set key=value` or in a `values.yaml` file.
+
+| Value | Description | Default |
+|-------|-------------|----------|
+| `mode` | `distributed` or `standalone` | `distributed` |
+| `replicas` | Number of StatefulSet replicas | `16` |
+| `rootUser` | Root access key | — |
+| `rootPassword` | Root secret key | — |
+| `persistence.enabled` | Enable PersistentVolumeClaim | `true` |
+| `persistence.size` | Storage size per replica | — |
+| `minioAPIPort` | S3 API port | `9000` |
+| `minioConsolePort` | Web console port | `9001` |
+| `image.repository` | Container image | `quay.io/minio/minio` |
+| `image.tag` | Image tag/release | `RELEASE.2024-12-18T13-15-44Z` |
+
+### Install with a values file
+
+```bash
+helm install --name my-release -f values.yaml minio/minio
+```
+
+### Use an existing PersistentVolumeClaim
+
+```bash
+helm install --set persistence.existingClaim=PVC_NAME minio/minio
+```
+
+### Use an existing secret for credentials
+
+Create the secret first:
+
+```bash
+kubectl create secret generic my-minio-secret \
+  --from-literal=rootUser=foobarbaz \
+  --from-literal=rootPassword=foobarbazqux
+```
+
+Then reference it during install:
+
+```bash
+helm install --set existingSecret=my-minio-secret minio/minio
+```
+
+### Create buckets at install time
+
+```bash
+helm install \
+  --set buckets[0].name=bucket1,buckets[0].policy=none,buckets[0].purge=false \
+  minio/minio
+```
+
+### Enable TLS
+
+Create a secret with your certificate files, then enable TLS:
+
+```bash
+kubectl create secret generic tls-ssl-minio \
+  --from-file=path/to/private.key \
+  --from-file=path/to/public.crt
+
+helm install --set tls.enabled=true,tls.certSecret=tls-ssl-minio minio/minio
+```
+
+### Upgrade the chart
+
+```bash
+helm get values my-release > old_values.yaml
+# Edit old_values.yaml to update image.tag
+helm upgrade -f old_values.yaml my-release minio/minio
+```
+
+### Uninstall the chart
+
+```bash
+helm uninstall my-release
+```
+
+## MinIO Operator
+
+The MinIO Operator manages MinIO Tenants as Kubernetes custom resources and is the recommended path for production. Installation is covered in the [MinIO Operator documentation](https://github.com/minio/operator).
+
+<Tip>
+  The MinIO Operator provides a dedicated Helm chart at `github.com/minio/operator/tree/master/helm` that is separate from the community chart. Use it for operator-managed tenants.
+</Tip>
+
+## Ports
+
+| Port | Purpose |
+|------|---------|
+| 9000 | S3 API |
+| 9001 | Web console |
+
+<Note>
+  With NetworkPolicy enabled (via `networkPolicy.enabled=true`), traffic is limited to port 9000 by default.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Distributed mode" icon="network" href="/architecture/distributed-mode">
+    Understand how MinIO distributes data across nodes and drives.
+  </Card>
+  <Card title="Storage classes" icon="layers" href="/architecture/storage-classes">
+    Configure parity levels for standard and reduced redundancy objects.
+  </Card>
+</CardGroup>

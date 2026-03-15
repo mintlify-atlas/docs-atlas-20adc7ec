@@ -1,0 +1,244 @@
+---
+title: "Prometheus integration"
+description: "Configure Prometheus to scrape MinIO metrics and set up alerting rules and Grafana dashboards."
+---
+
+[Prometheus](https://prometheus.io) is a cloud-native monitoring platform that uses a pull model to collect time-series metrics over HTTP. MinIO exposes Prometheus-compatible endpoints that Prometheus can scrape directly.
+
+## Prerequisites
+
+- A running MinIO deployment
+- [Prometheus](https://prometheus.io/download) downloaded and extracted
+- `mc` configured with an alias for your MinIO deployment
+
+## Authentication modes
+
+MinIO metrics endpoints require authentication by default (`jwt` mode). You can also configure public access.
+
+<Tabs>
+  <Tab title="JWT authentication (default)">
+    In JWT mode, each Prometheus scrape request must include a bearer token. Use `mc admin prometheus generate` to produce a ready-to-use `scrape_configs` block:
+
+    ```bash
+    mc admin prometheus generate <alias> cluster
+    mc admin prometheus generate <alias> bucket
+    mc admin prometheus generate <alias> node
+    mc admin prometheus generate <alias> resource
+    ```
+
+    The valid metric type arguments are `cluster`, `node`, `bucket`, and `resource`. If omitted, it defaults to `cluster`.
+  </Tab>
+  <Tab title="Public access">
+    To allow unauthenticated scraping, set the environment variable before starting MinIO:
+
+    ```bash
+    export MINIO_PROMETHEUS_AUTH_TYPE="public"
+    minio server /mnt/data
+    ```
+
+    <Warning>
+      Only enable public access when the metrics endpoints are protected at the network level. Anyone who can reach the endpoint can read all metrics.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Configuring Prometheus
+
+<Steps>
+  <Step title="Generate the scrape configuration">
+    Run `mc admin prometheus generate` for each metric scope you want to collect:
+
+    ```bash
+    mc admin prometheus generate myminio cluster
+    mc admin prometheus generate myminio bucket
+    mc admin prometheus generate myminio node
+    mc admin prometheus generate myminio resource
+    ```
+
+    Each command outputs a `scrape_configs` block ready to paste into `prometheus.yml`.
+  </Step>
+
+  <Step title="Update prometheus.yml">
+    Add the generated blocks to the `scrape_configs` section of your `prometheus.yml`. A complete example with all four metric scopes using JWT authentication:
+
+    ```yaml
+    scrape_configs:
+
+      # Cluster-wide metrics — scrape from any single node or load balancer
+      - job_name: minio-job
+        bearer_token: <secret>
+        metrics_path: /minio/v2/metrics/cluster
+        scheme: http
+        static_configs:
+          - targets: ['localhost:9000']
+
+      # Bucket-level metrics
+      - job_name: minio-job-bucket
+        bearer_token: <secret>
+        metrics_path: /minio/v2/metrics/bucket
+        scheme: http
+        static_configs:
+          - targets: ['localhost:9000']
+
+      # Per-node metrics — list all nodes so Grafana can visualize per-node data
+      - job_name: minio-job-node
+        bearer_token: <secret>
+        metrics_path: /minio/v2/metrics/node
+        scheme: http
+        static_configs:
+          - targets: ['server1:9000', 'server2:9000', 'server3:9000', 'server4:9000']
+
+      # Resource metrics (CPU, memory, network, drive iostat)
+      - job_name: minio-job-resource
+        bearer_token: <secret>
+        metrics_path: /minio/v2/metrics/resource
+        scheme: http
+        static_configs:
+          - targets: ['localhost:9000']
+    ```
+
+    For **public** endpoints (no authentication), omit the `bearer_token` field from each job.
+
+    <Note>
+      For deployments behind a load balancer, use the load balancer hostname for cluster and bucket scrape targets. Prometheus sets the `Host` header to `domain:port`, so ensure your load balancer routes these requests correctly.
+    </Note>
+  </Step>
+
+  <Step title="Start Prometheus">
+    ```bash
+    ./prometheus --config.file=prometheus.yml
+    ```
+
+    The Prometheus dashboard is available at `http://localhost:9090` by default. MinIO metrics appear under the `minio_` prefix.
+  </Step>
+</Steps>
+
+## Key metrics to monitor
+
+The following metrics are particularly useful for alerting and capacity planning:
+
+### Capacity
+
+| Metric | Description |
+|---|---|
+| `minio_cluster_capacity_raw_total_bytes` | Total raw storage capacity online in the cluster |
+| `minio_cluster_capacity_raw_free_bytes` | Total raw storage free in the cluster |
+| `minio_cluster_capacity_usable_total_bytes` | Total usable capacity (after erasure coding overhead) |
+| `minio_cluster_capacity_usable_free_bytes` | Total usable free capacity |
+
+### Drive health
+
+| Metric | Description |
+|---|---|
+| `minio_node_drive_errors_ioerror` | Total I/O errors on a drive since server start |
+| `minio_node_drive_errors_timeout` | Total timeout errors on a drive since server start |
+| `minio_node_drive_offline_total` | Total offline drives on this node |
+| `minio_cluster_drive_offline_total` | Total offline drives across the cluster |
+
+### API requests
+
+| Metric | Description |
+|---|---|
+| `minio_s3_requests_total` | Total S3 requests |
+| `minio_s3_requests_errors_total` | Total requests with 4xx or 5xx errors |
+| `minio_s3_requests_4xx_errors_total` | Total requests with 4xx errors |
+| `minio_s3_requests_5xx_errors_total` | Total requests with 5xx errors |
+| `minio_s3_requests_inflight_total` | Requests currently in flight |
+
+### Healing
+
+| Metric | Description |
+|---|---|
+| `minio_heal_objects_total` | Objects scanned in the current self-healing run |
+| `minio_heal_objects_heal_total` | Objects healed in the current self-healing run |
+| `minio_heal_objects_errors_total` | Objects for which healing failed |
+
+### Cluster health
+
+| Metric | Description |
+|---|---|
+| `minio_cluster_health_erasure_set_status` | Health status of each erasure set |
+| `minio_cluster_nodes_online_total` | Online node count |
+| `minio_cluster_nodes_offline_total` | Offline node count |
+| `minio_cluster_write_quorum` | Maximum write quorum across all pools and sets |
+
+## Alerting rules
+
+Configure Prometheus AlertManager to send notifications when MinIO enters a degraded state.
+
+<Steps>
+  <Step title="Add alertmanager to prometheus.yml">
+    ```yaml
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['localhost:9093']
+    rule_files:
+      - rules.yml
+    ```
+  </Step>
+
+  <Step title="Create alerting rules">
+    Create `rules.yml` with rules for your deployment. The following example fires a critical alert when an erasure set loses quorum:
+
+    ```yaml
+    groups:
+      - name: minio
+        rules:
+          - alert: MinIOClusterTolerance
+            expr: minio_cluster_health_erasure_set_status < 1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Instance {{ $labels.server }} has lost quorum on pool {{ $labels.pool }} on set {{ $labels.set }}"
+              description: "MinIO instance {{ $labels.server }} of job {{ $labels.job }} has lost quorum on pool {{ $labels.pool }} on set {{ $labels.set }} for more than 5 minutes."
+    ```
+  </Step>
+
+  <Step title="Configure AlertManager">
+    Create an AlertManager configuration file (`alertmanager.yml`) with a receiver. This example posts alerts to a webhook:
+
+    ```yaml
+    route:
+      group_by: ['alertname']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      receiver: 'web.hook'
+    receivers:
+      - name: 'web.hook'
+        webhook_configs:
+          - url: 'http://127.0.0.1:8010/webhook'
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'dev', 'instance']
+    ```
+  </Step>
+</Steps>
+
+## Grafana dashboards
+
+After configuring Prometheus, connect Grafana to your Prometheus data source and import the official MinIO dashboards.
+
+<CardGroup cols={2}>
+  <Card title="Main MinIO dashboard" icon="chart-line">
+    Grafana dashboard ID **13502** on the Grafana dashboard portal covers cluster capacity, API traffic, drive health, and node-level metrics.
+  </Card>
+  <Card title="Replication dashboards" icon="arrows-rotate">
+    Separate JSON dashboard files are available for node-level replication metrics and cluster-level replication metrics.
+  </Card>
+  <Card title="Bucket dashboard" icon="bucket">
+    A dedicated bucket dashboard shows per-bucket traffic, request rates, and replication status.
+  </Card>
+  <Card title="Node dashboard" icon="server">
+    The node dashboard provides drive iostat, memory, CPU, and process metrics broken down per node.
+  </Card>
+</CardGroup>
+
+<Tip>
+  For the node-level Prometheus scrape job, list all server addresses under `targets` so that Grafana can visualize and compare metrics across nodes.
+</Tip>

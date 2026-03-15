@@ -1,0 +1,131 @@
+---
+title: "Erasure coding"
+description: "How MinIO uses Reed-Solomon erasure coding and HighwayHash checksums to protect data against drive failures and silent corruption."
+---
+
+MinIO protects data against hardware failures and silent data corruption using erasure coding and checksums. With the default configuration you can lose up to half (`N/2`) of the total drives in an erasure set and still recover all objects.
+
+## Reed-Solomon algorithm
+
+MinIO uses the [Reed-Solomon](https://github.com/klauspost/reedsolomon) erasure coding scheme. When an object is written, MinIO:
+
+1. Splits the object into **data shards**
+2. Computes **parity shards** from the data shards
+3. Writes all shards — data and parity — to separate drives in the erasure set
+
+If drives fail or shards become corrupted, MinIO reconstructs missing shards from the surviving ones. Reed-Solomon can recover from any combination of failures as long as the number of lost shards does not exceed the parity count.
+
+The Reed-Solomon implementation supports up to 256 total shards (128 data + 128 parity). MinIO caps erasure sets at 16 drives, well within this limit, to avoid the performance overhead of chatty inter-shard communication at larger set sizes.
+
+## Data and parity shards
+
+For an erasure set of `N` drives:
+
+- **Default**: `N/2` data shards + `N/2` parity shards
+- **Minimum parity**: 1 shard (`EC:1`)
+- **Maximum parity**: `N/2` shards (parity cannot exceed data)
+
+Example: in a 12-drive erasure set using default configuration, MinIO writes 6 data shards and 6 parity shards. Any 6 of the 12 drives can be lost and the object is still fully recoverable.
+
+### Drive failure tolerance
+
+| Erasure set size | Default parity | Drives you can lose |
+|-----------------|---------------|---------------------|
+| 4               | 2             | 2                   |
+| 8               | 4             | 4                   |
+| 12              | 6             | 6                   |
+| 16              | 8             | 8                   |
+
+### Starting a 12-drive erasure coded server
+
+```sh
+minio server /data{1...12}
+```
+
+### Starting an 8-drive erasure coded server with Docker
+
+```sh
+podman run \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  --name minio \
+  -v /mnt/data1:/data1 \
+  -v /mnt/data2:/data2 \
+  -v /mnt/data3:/data3 \
+  -v /mnt/data4:/data4 \
+  -v /mnt/data5:/data5 \
+  -v /mnt/data6:/data6 \
+  -v /mnt/data7:/data7 \
+  -v /mnt/data8:/data8 \
+  quay.io/minio/minio server /data{1...8} --console-address ":9001"
+```
+
+## Erasure set size selection
+
+MinIO automatically calculates the erasure set size from the total number of drives you provide:
+
+- MinIO divides drives into sets of **2 to 16** drives
+- The total number of drives must be a multiple of the set size
+- MinIO uses the **largest set size** that divides evenly into the total drive count
+- In distributed mode, a **node affinity** algorithm ensures each node contributes an equal number of drives per set
+
+**Examples:**
+
+- 18 drives → 2 sets of 9 drives
+- 24 drives → 2 sets of 12 drives
+- 64 drives → 4 sets of 16 drives
+
+<Note>
+  The drives in an erasure set should be approximately the same size. MinIO uses the smallest drive capacity as the effective size for all drives in the set.
+</Note>
+
+## BitRot protection
+
+Bit rot (also called silent data corruption or data rot) occurs when data on a drive changes without signaling an error — making it more dangerous than an outright drive failure.
+
+MinIO addresses this with [HighwayHash](https://github.com/minio/highwayhash), a high-speed cryptographic hash function:
+
+- A HighwayHash checksum is computed for each shard at write time
+- Every read verifies the checksum against the stored value
+- If a checksum mismatch is detected, MinIO marks the shard as corrupted and reconstructs it from parity
+
+HighwayHash is chosen for its speed — it adds negligible latency on modern hardware while providing strong integrity guarantees.
+
+## Write and read quorum
+
+| Operation | Quorum required |
+|-----------|-----------------|
+| Write     | `N/2 + 1` drives (write quorum) |
+| Read      | `N/2` drives (read quorum) |
+
+If drives are offline when a write begins, MinIO automatically adds extra parity bits to protect objects up to the 50% drive tolerance threshold, allowing writes to complete on degraded clusters without losing the redundancy SLA.
+
+## Object-level healing
+
+Unlike RAID, which requires volume-level healing (meaning the entire volume must be rebuilt), MinIO heals **one object at a time**:
+
+1. MinIO scans the erasure set for objects with missing or corrupted shards
+2. For each degraded object, it reconstructs the missing shards from the surviving shards
+3. The reconstructed shards are written back to repaired or replacement drives
+
+This means a 1 TiB drive replacement heals only the objects stored on that drive, not the entire volume — dramatically reducing healing time and I/O impact on running workloads.
+
+## Comparison with RAID
+
+| Capability | MinIO erasure coding | RAID 6 |
+|------------|---------------------|--------|
+| Drive failures tolerated | Up to N/2 | 2 |
+| Healing granularity | Per object | Per volume |
+| Per-object storage class | Yes | No |
+| BitRot detection | Yes (HighwayHash) | No |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Storage classes" icon="layers" href="/architecture/storage-classes">
+    Configure custom parity counts with STANDARD and REDUCED_REDUNDANCY classes.
+  </Card>
+  <Card title="Distributed mode" icon="network" href="/architecture/distributed-mode">
+    Extend erasure sets across multiple nodes for node-level fault tolerance.
+  </Card>
+</CardGroup>

@@ -1,0 +1,199 @@
+---
+title: "Presigned URLs"
+description: "Generate time-limited URLs for unauthenticated object downloads and uploads with MinIO."
+---
+
+Presigned URLs embed AWS Signature Version 4 query-string authentication parameters so that any HTTP client can access a specific object without permanent credentials. The URL encodes the permission (GET, PUT, etc.), the expiry time, and the signature.
+
+<Note>
+Presigned URLs expire after at most **7 days** (604,800 seconds). The server's clock is used to validate expiry; ensure client and server clocks are synchronized.
+</Note>
+
+## Query-string authentication parameters
+
+All presigned URLs carry these query parameters:
+
+| Parameter | Description |
+|---|---|
+| `X-Amz-Algorithm` | Always `AWS4-HMAC-SHA256`. |
+| `X-Amz-Credential` | Access key, date, region, service, and `aws4_request` scope. |
+| `X-Amz-Date` | ISO 8601 timestamp when the URL was signed, e.g. `20240101T000000Z`. |
+| `X-Amz-Expires` | Seconds until the URL expires. Maximum 604,800 (7 days). |
+| `X-Amz-SignedHeaders` | Semicolon-separated list of signed headers, typically `host`. |
+| `X-Amz-Signature` | HMAC-SHA256 hex signature. |
+
+---
+
+## Presigned GET (object download)
+
+Generate a URL that allows any client to download a specific object.
+
+**`GET /{bucket}/{key}?X-Amz-Algorithm=...&X-Amz-Expires=...&X-Amz-Signature=...`**
+
+<CodeGroup>
+
+```go Go SDK
+import (
+    "context"
+    "time"
+    "github.com/minio/minio-go/v7"
+)
+
+// Generate a presigned GET URL valid for 24 hours
+presignedURL, err := client.PresignedGetObject(
+    context.Background(),
+    "my-bucket",
+    "photo.jpg",
+    24*time.Hour,
+    nil, // optional extra query parameters
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(presignedURL.String())
+```
+
+```bash curl
+# Use the URL directly, no additional authentication needed
+curl "https://minio.example.com/my-bucket/photo.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=...&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=..." \
+  -o photo.jpg
+```
+
+</CodeGroup>
+
+### Overriding response headers
+
+Add any of these query parameters to override response headers in the download:
+
+| Parameter | Overrides header |
+|---|---|
+| `response-content-type` | `Content-Type` |
+| `response-content-disposition` | `Content-Disposition` |
+| `response-cache-control` | `Cache-Control` |
+| `response-content-encoding` | `Content-Encoding` |
+| `response-content-language` | `Content-Language` |
+| `response-expires` | `Expires` |
+
+These parameters must be included in the signing process.
+
+---
+
+## Presigned PUT (object upload)
+
+Generate a URL that allows any client to upload an object directly.
+
+**`PUT /{bucket}/{key}?X-Amz-Algorithm=...&X-Amz-Expires=...&X-Amz-Signature=...`**
+
+<CodeGroup>
+
+```go Go SDK
+import (
+    "context"
+    "net/url"
+    "time"
+)
+
+// Generate a presigned PUT URL valid for 1 hour
+presignedURL, err := client.PresignedPutObject(
+    context.Background(),
+    "my-bucket",
+    "uploads/photo.jpg",
+    time.Hour,
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(presignedURL.String())
+```
+
+```bash curl
+# Upload using the presigned PUT URL
+curl -X PUT \
+  "https://minio.example.com/my-bucket/uploads/photo.jpg?X-Amz-Algorithm=...&X-Amz-Signature=..." \
+  -H 'Content-Type: image/jpeg' \
+  --data-binary @photo.jpg
+```
+
+</CodeGroup>
+
+<Warning>
+The presigned PUT URL only authorizes the exact object key it was generated for. An upload to any other key will fail.
+</Warning>
+
+---
+
+## Presigned POST policy
+
+A POST policy is a base64-encoded JSON document that permits browser-based form uploads directly to MinIO. It is more flexible than a presigned PUT because it can restrict allowed content types, size ranges, and key prefixes.
+
+**`POST /{bucket}`** with `multipart/form-data`
+
+<CodeGroup>
+
+```go Go SDK
+import (
+    "context"
+    "time"
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+policy := minio.NewPostPolicy()
+policy.SetBucket("my-bucket")
+policy.SetKey("uploads/photo.jpg")
+policy.SetExpires(time.Now().UTC().Add(time.Hour))
+policy.SetContentType("image/jpeg")
+policy.SetContentLengthRange(1024, 10*1024*1024) // 1 KiB to 10 MiB
+
+url, formData, err := client.PresignedPostPolicy(context.Background(), policy)
+if err != nil {
+    log.Fatal(err)
+}
+// formData contains form fields that must be included in the multipart upload
+fmt.Println(url, formData)
+```
+
+```bash curl
+# Browser-style multipart form upload using the policy
+curl -X POST "https://minio.example.com/my-bucket" \
+  -F "key=uploads/photo.jpg" \
+  -F "x-amz-credential=ACCESS_KEY/20240101/us-east-1/s3/aws4_request" \
+  -F "x-amz-algorithm=AWS4-HMAC-SHA256" \
+  -F "x-amz-date=20240101T000000Z" \
+  -F "policy=BASE64_ENCODED_POLICY" \
+  -F "x-amz-signature=SIGNATURE" \
+  -F "Content-Type=image/jpeg" \
+  -F "file=@photo.jpg"
+```
+
+</CodeGroup>
+
+### POST policy conditions
+
+The policy JSON document contains a list of conditions. Each condition is one of:
+
+- **Exact match:** `["eq", "$field", "value"]`
+- **Prefix match:** `["starts-with", "$field", "prefix"]`
+- **Range match:** `["content-length-range", minBytes, maxBytes]`
+
+```json
+{
+  "expiration": "2024-01-01T12:00:00.000Z",
+  "conditions": [
+    {"bucket": "my-bucket"},
+    ["starts-with", "$key", "uploads/"],
+    ["content-length-range", 1024, 10485760],
+    {"x-amz-algorithm": "AWS4-HMAC-SHA256"},
+    {"x-amz-credential": "ACCESS_KEY/20240101/us-east-1/s3/aws4_request"},
+    {"x-amz-date": "20240101T000000Z"}
+  ]
+}
+```
+
+---
+
+## Security considerations
+
+- Presigned URLs cannot be revoked once issued; they remain valid until they expire.
+- Use the shortest feasible expiry duration for your use case.
+- A presigned URL inherits the permissions of the credentials used to create it. If those credentials are later revoked or the bucket policy changes, existing presigned URLs may stop working.
+- Presigned PUT URLs do not enforce `Content-Type`; if content type matters, use a POST policy with an `eq` condition on `Content-Type`.

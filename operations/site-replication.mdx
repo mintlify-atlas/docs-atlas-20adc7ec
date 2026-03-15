@@ -1,0 +1,173 @@
+---
+title: "Site Replication"
+description: "Configure automatic replication across multiple independent MinIO sites, including IAM, buckets, and objects."
+---
+
+Site replication allows multiple independent MinIO deployments to operate as a synchronized cluster of peer sites. Unlike bucket replication—which replicates objects between specific buckets—site replication replicates the entire namespace, all IAM configuration, and bucket metadata across all participating sites.
+
+## Site replication vs bucket replication
+
+| | Site Replication | Bucket Replication |
+|---|---|---|
+| Scope | Entire site (all buckets) | Per-bucket, per-rule |
+| IAM sync | Yes (users, groups, policies, STS) | No |
+| Bucket creation/deletion | Replicated | Not replicated |
+| Object data | Replicated | Replicated |
+| ILM (lifecycle) configuration | Not replicated (by design) | Not replicated |
+| Bucket notifications | Not replicated (by design) | Not replicated |
+| IDP requirement | All sites must use the same external IDP | No requirement |
+
+<Note>
+  Bucket versioning is automatically enabled for all new and existing buckets across all replicated sites when site replication is configured.
+</Note>
+
+## What gets replicated
+
+When site replication is enabled, the following are kept in sync across all peer sites:
+
+- Creation and deletion of buckets and objects
+- All IAM users, groups, policies, and their mappings to users or groups
+- STS credentials
+- Service accounts (except those owned by the root user)
+- Bucket policies
+- Bucket tags
+- Bucket object-lock configurations (retention and legal hold)
+- Bucket encryption configurations
+
+The following are **not replicated** and may differ between sites:
+
+- Bucket notification configuration
+- Bucket lifecycle (ILM) configuration
+
+## Prerequisites
+
+<Warning>
+  Only **one** of the sites added for replication may have existing data at the time site replication is configured. After configuration, that data is replicated to all other (initially empty) sites. New data can subsequently be written to any site.
+</Warning>
+
+- All sites must use the **same** external Identity Provider (IDP), if any IDP is configured.
+- For SSE-S3 or SSE-KMS encryption, all sites must have access to a central KMS deployment.
+- **Removing a site** from a replicated set is not supported once configured.
+
+## Setting up site replication
+
+<Steps>
+  <Step title="Configure mc aliases for each site">
+    Create an alias in `mc` for each MinIO site:
+
+    ```sh
+    mc alias set minio1 https://minio1.example.com:9000 adminuser adminpassword
+    mc alias set minio2 https://minio2.example.com:9000 adminuser adminpassword
+    mc alias set minio3 https://minio3.example.com:9000 adminuser adminpassword
+    ```
+
+    Alternatively, use environment variables:
+
+    ```sh
+    export MC_HOST_minio1=https://adminuser:adminpassword@minio1.example.com
+    export MC_HOST_minio2=https://adminuser:adminpassword@minio2.example.com
+    export MC_HOST_minio3=https://adminuser:adminpassword@minio3.example.com
+    ```
+  </Step>
+  <Step title="Add sites to the replication group">
+    Pass all site aliases to `mc admin replicate add` in a single command:
+
+    ```sh
+    mc admin replicate add minio1 minio2 minio3
+    ```
+
+    The first alias listed becomes the initial authoritative site. Only this site may contain pre-existing data.
+  </Step>
+  <Step title="Verify the configuration">
+    Query the replication configuration from any site:
+
+    ```sh
+    mc admin replicate info minio1
+    ```
+  </Step>
+</Steps>
+
+## Monitoring site replication status
+
+```sh
+mc admin replicate status minio1
+```
+
+This shows the replication state between the site and all its peers, including lag metrics and any synchronization errors.
+
+## Enabling ILM expiry replication (optional)
+
+By default, ILM (lifecycle) configuration is not replicated between sites. You can optionally enable replication of ILM expiry rules across sites:
+
+```sh
+mc admin replicate add minio1 minio2 --replicate-ilm-expiry
+```
+
+To check whether ILM expiry replication is enabled:
+
+```sh
+mc admin replicate info minio1 --json
+```
+
+To disable ILM expiry replication on a running setup:
+
+```sh
+mc admin replicate update minio1 --disable-ilm-expiry-replication
+```
+
+To re-enable it:
+
+```sh
+mc admin replicate update minio1 --enable-ilm-expiry-replication
+```
+
+## Failover and failback
+
+Site replication provides automatic read failover: if a `GET` or `HEAD` request targets an object that is missing on one site but present on a peer site, MinIO automatically proxies the request to the peer. This allows applications to continue operating across both sites before full synchronization completes.
+
+### Re-syncing after data loss
+
+If one site loses its data and needs to be re-synchronized from a peer:
+
+<Steps>
+  <Step title="Remove the degraded site from the replication group">
+    ```sh
+    mc admin replicate rm --all --force minio1
+    ```
+  </Step>
+  <Step title="Rebuild the degraded site">
+    Restore the MinIO deployment on the affected site, then re-add it to the replication group:
+
+    ```sh
+    mc admin replicate add minio1 minio2
+    ```
+  </Step>
+  <Step title="Trigger a resync">
+    ```sh
+    mc admin replicate resync start minio1 minio2
+    ```
+
+    This walks the namespace of `minio2` and replicates objects back to `minio1`.
+  </Step>
+</Steps>
+
+## STS credentials and root accounts
+
+Site replication no longer requires root credentials to be identical across all peer sites. STS tokens are signed with the site replicator service account credentials, which allows each site to independently manage its root account.
+
+<Warning>
+  STS tokens signed with root credentials before upgrading to the latest MinIO version will become invalid after the upgrade. Regenerate STS tokens after updating.
+</Warning>
+
+Similarly, if site replication is removed from a deployment, all STS tokens signed by the replication service account become invalid and must be regenerated.
+
+## mc admin replicate command reference
+
+| Command | Description |
+|---|---|
+| `mc admin replicate add <site1> <site2> [<site3>...]` | Configure a new replication group |
+| `mc admin replicate info <alias>` | Display replication configuration |
+| `mc admin replicate status <alias>` | Show replication health and lag |
+| `mc admin replicate update <alias>` | Update replication settings |
+| `mc admin replicate resync start <site1> <site2>` | Trigger a full data resync |
+| `mc admin replicate rm --all --force <alias>` | Remove all site replication configuration |

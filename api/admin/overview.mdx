@@ -1,0 +1,109 @@
+---
+title: "Admin API Overview"
+description: "Overview of the MinIO Admin API, authentication requirements, and available endpoint categories."
+---
+
+The MinIO Admin API exposes server management operations that have no equivalent in the standard S3 API. It covers user and group management, policy administration, server diagnostics, and storage healing.
+
+## Base path
+
+All Admin API endpoints are served under:
+
+```
+/minio/admin/v3/
+```
+
+Example full URL:
+
+```
+https://minio.example.com/minio/admin/v3/info
+```
+
+## Authentication
+
+The Admin API requires AWS Signature Version 4 authentication. The caller must be either:
+
+- The **root user** (credentials set via `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`), or
+- An IAM user with an attached policy that grants the required admin action.
+
+<Warning>
+Do not expose the Admin API to untrusted networks. Protect it behind a firewall or load balancer, and rotate root credentials regularly.
+</Warning>
+
+### Admin policy actions
+
+Each endpoint checks for a specific admin action in the caller's policy. Common actions include:
+
+| Action | Description |
+|---|---|
+| `s3:ListUsers` | List IAM users. |
+| `admin:CreateUser` | Create or update an IAM user. |
+| `admin:DeleteUser` | Remove an IAM user. |
+| `admin:CreatePolicy` | Create an IAM policy. |
+| `admin:DeletePolicy` | Remove an IAM policy. |
+| `admin:SetUserOrGroupPolicy` | Attach a policy to a user or group. |
+| `admin:Heal` | Trigger object storage healing. |
+| `admin:ServerInfo` | Read server information and metrics. |
+| `admin:StorageInfo` | Read storage disk information. |
+| `admin:DataUsageInfo` | Read data usage statistics. |
+
+## Using the madmin Go SDK
+
+Most Admin API use cases are best addressed with the `madmin-go` SDK:
+
+<CodeGroup>
+
+```go Go SDK
+import (
+    "context"
+    "github.com/minio/madmin-go/v3"
+)
+
+adminClient, err := madmin.New(
+    "minio.example.com",
+    "ACCESS_KEY",
+    "SECRET_KEY",
+    true, // use TLS
+)
+```
+
+```bash mc CLI
+mc alias set myminio https://minio.example.com ACCESS_KEY SECRET_KEY
+mc admin info myminio
+```
+
+</CodeGroup>
+
+## Available endpoint categories
+
+<Columns cols={2}>
+  <Card title="Users" icon="user" href="/api/admin/users">
+    Create, list, update, and delete IAM users.
+  </Card>
+  <Card title="Groups" icon="users" href="/api/admin/groups">
+    Manage group membership and group status.
+  </Card>
+  <Card title="Policies" icon="shield" href="/api/admin/policies">
+    Create, list, and attach IAM policies to users and groups.
+  </Card>
+  <Card title="Server info" icon="server" href="/api/admin/server-info">
+    Retrieve server information, storage details, data usage, and real-time metrics.
+  </Card>
+  <Card title="Heal" icon="heart-pulse" href="/api/admin/heal">
+    Trigger and monitor erasure-code storage healing operations.
+  </Card>
+</Columns>
+
+## Response format
+
+Admin API responses use JSON. Errors are returned as JSON objects:
+
+```json
+{
+  "Code": "XMinioAdminNoSuchUser",
+  "Message": "The specified user does not exist",
+  "Key": "alice"
+}
+```
+
+HTTP status codes follow standard conventions: `200` for success, `400` for bad requests, `403` for authorization failures, and `500` for internal errors.

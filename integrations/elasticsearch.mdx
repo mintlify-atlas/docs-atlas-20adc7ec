@@ -1,0 +1,187 @@
+---
+title: "Elasticsearch Integration"
+description: "Index MinIO event notifications into Elasticsearch for search, analytics, and audit logging of object storage operations."
+---
+
+MinIO can send event notifications directly to Elasticsearch, automatically creating an index and inserting documents for each matching event. This enables full-text search and analytics over your object storage activity.
+
+<Note>
+  MinIO requires Elasticsearch **version 7 or later**. Versions 6 and below are not supported.
+</Note>
+
+## Prerequisites
+
+- A running Elasticsearch cluster (version 7+) accessible from MinIO.
+- MinIO `mc` client configured with an alias for your MinIO deployment.
+
+## Enabling Elasticsearch Notifications
+
+<Steps>
+  <Step title="Configure the Elasticsearch target">
+    ```bash
+    mc admin config set myminio notify_elasticsearch:1 \
+      url="http://elasticsearch.example.com:9200" \
+      index="minio-events" \
+      format="namespace"
+    ```
+  </Step>
+  <Step title="Restart MinIO">
+    ```bash
+    mc admin service restart myminio
+    ```
+  </Step>
+  <Step title="Subscribe a bucket to events">
+    ```bash
+    mc event add myminio/mybucket \
+      arn:minio:sqs::1:elasticsearch \
+      --event "s3:ObjectCreated:*,s3:ObjectRemoved:*"
+    ```
+  </Step>
+  <Step title="Verify the configuration">
+    ```bash
+    mc event list myminio/mybucket
+    ```
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+All configuration keys are sourced from `internal/event/target/elasticsearch.go`.
+
+| Key | Description |
+|:----|:------------|
+| `url` | Elasticsearch server URL (required) |
+| `index` | Elasticsearch index name (required) |
+| `format` | Document format: `namespace` or `access` (required) |
+| `username` | Basic auth username |
+| `password` | Basic auth password |
+| `queue_dir` | Persistent queue directory for undelivered events |
+| `queue_limit` | Maximum number of queued events |
+
+## Document Formats
+
+MinIO supports two document storage formats for Elasticsearch, each suited to different use cases.
+
+### Namespace Format
+
+In `namespace` format, each object in MinIO corresponds to a **single document** in Elasticsearch. The document ID is derived from a hash of `<bucket>/<object>`. When an object is overwritten, its document is updated in place. When an object is deleted, its document is removed.
+
+This format provides a live view of the current state of your MinIO namespace.
+
+```json
+{
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "eventName": "s3:ObjectCreated:Put",
+      "eventTime": "2024-01-15T10:30:00.000Z",
+      "s3": {
+        "bucket": { "name": "mybucket" },
+        "object": {
+          "key": "images/photo.jpg",
+          "size": 204800,
+          "eTag": "abc123..."
+        }
+      }
+    }
+  ]
+}
+```
+
+**Use namespace format when:**
+- You want to query the current list of objects in a bucket.
+- You need Elasticsearch to reflect the live MinIO state.
+
+### Access Format
+
+In `access` format, **every event** creates a new document in Elasticsearch (append-only). Documents accumulate over time, giving you a full audit log of all object operations.
+
+```json
+{
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "eventName": "s3:ObjectRemoved:Delete",
+      "eventTime": "2024-01-15T11:00:00.000Z",
+      "s3": {
+        "bucket": { "name": "mybucket" },
+        "object": { "key": "images/photo.jpg" }
+      }
+    }
+  ]
+}
+```
+
+**Use access format when:**
+- You need a complete audit trail including deletions and overwrites.
+- You are analyzing access patterns or building usage dashboards.
+
+<Tabs>
+  <Tab title="Namespace vs Access">
+    | Characteristic | `namespace` | `access` |
+    |:---------------|:------------|:---------|
+    | Document count | One per object | One per event |
+    | Deletions | Removes document | Appends new document |
+    | Overwrites | Updates document | Appends new document |
+    | Use case | Live state view | Audit log |
+    | Index growth | Bounded by object count | Unbounded |
+  </Tab>
+</Tabs>
+
+## Environment Variable Configuration
+
+```bash
+export MINIO_NOTIFY_ELASTICSEARCH_ENABLE_1=on
+export MINIO_NOTIFY_ELASTICSEARCH_URL_1=http://elasticsearch.example.com:9200
+export MINIO_NOTIFY_ELASTICSEARCH_INDEX_1=minio-events
+export MINIO_NOTIFY_ELASTICSEARCH_FORMAT_1=namespace
+export MINIO_NOTIFY_ELASTICSEARCH_USERNAME_1=elastic
+export MINIO_NOTIFY_ELASTICSEARCH_PASSWORD_1=changeme
+```
+
+## Authentication
+
+MinIO supports HTTP basic authentication for Elasticsearch:
+
+```bash
+mc admin config set myminio notify_elasticsearch:1 \
+  url="https://elasticsearch.example.com:9200" \
+  index="minio-events" \
+  format="namespace" \
+  username="elastic" \
+  password="changeme"
+```
+
+<Note>
+  Both `username` and `password` must be set together; specifying one without the other will cause a validation error.
+</Note>
+
+## Index Management
+
+MinIO automatically creates the Elasticsearch index if it does not exist when the first event is delivered. No manual index creation is required.
+
+For production deployments, consider configuring index templates in Elasticsearch before enabling MinIO notifications to control shard count, replica count, and field mappings.
+
+## Persistent Queue
+
+Configure a local queue to persist events when Elasticsearch is temporarily unavailable:
+
+```bash
+mc admin config set myminio notify_elasticsearch:1 \
+  url="http://elasticsearch.example.com:9200" \
+  index="minio-events" \
+  format="access" \
+  queue_dir="/var/minio/es-queue" \
+  queue_limit="50000"
+```
+
+## Filtering Events
+
+```bash
+# Index only PUT and DELETE events for PDF files
+mc event add myminio/mybucket arn:minio:sqs::1:elasticsearch \
+  --event "s3:ObjectCreated:Put,s3:ObjectRemoved:Delete" \
+  --suffix ".pdf"
+```

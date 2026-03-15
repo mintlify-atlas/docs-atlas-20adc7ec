@@ -1,0 +1,164 @@
+---
+title: "Install from source"
+description: "Build and run MinIO from Go source code."
+---
+
+The MinIO community edition is distributed as source code only. This page covers building MinIO with the Go toolchain, cross-compiling for other platforms, and running the resulting binary.
+
+<Note>
+  Production environments using compiled-from-source MinIO binaries do so at their own risk. The AGPLv3 license provides no warranties nor liabilities for any such usage.
+</Note>
+
+## Prerequisites
+
+- **Go 1.24 or later** — [Install Go](https://golang.org/doc/install)
+- A working internet connection to download the module and its dependencies
+
+Verify your Go version:
+
+```sh
+go version
+```
+
+Expected output (version must be 1.24 or higher):
+
+```
+go version go1.24.0 linux/amd64
+```
+
+## Install with go install
+
+The fastest path is `go install`, which downloads, compiles, and places the binary in `$GOPATH/bin` (or `$HOME/go/bin` by default):
+
+```sh
+go install github.com/minio/minio@latest
+```
+
+After the command completes, confirm the binary is accessible:
+
+```sh
+minio --version
+```
+
+<Tip>
+  Make sure `$GOPATH/bin` (or `$(go env GOPATH)/bin`) is on your `PATH`. Add the following to your shell profile if the command is not found:
+
+  ```sh
+  export PATH="$PATH:$(go env GOPATH)/bin"
+  ```
+</Tip>
+
+## Build with go build
+
+If you need more control—for example, to embed a custom build tag or target a specific architecture—clone the repository and run `go build` directly:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```sh
+    git clone https://github.com/minio/minio.git
+    cd minio
+    ```
+  </Step>
+
+  <Step title="Build the binary">
+    ```sh
+    go build
+    ```
+
+    This produces a `minio` binary in the current directory.
+  </Step>
+
+  <Step title="Run the server">
+    ```sh
+    ./minio server /data
+    ```
+  </Step>
+</Steps>
+
+## Cross-compilation
+
+Use the `GOOS` and `GOARCH` environment variables to produce a binary for a different target platform. Run these commands from inside the cloned repository:
+
+<CodeGroup>
+
+```sh Linux ARM64
+env GOOS=linux GOARCH=arm64 go build
+```
+
+```sh Linux AMD64
+env GOOS=linux GOARCH=amd64 go build
+```
+
+```sh macOS Apple Silicon
+env GOOS=darwin GOARCH=arm64 go build
+```
+
+```sh Windows AMD64
+env GOOS=windows GOARCH=amd64 go build
+```
+
+</CodeGroup>
+
+The output binary (`minio` or `minio.exe` on Windows) is placed in the current directory and can be copied to the target machine.
+
+<Warning>
+  Running MinIO on Windows is considered **experimental**. Use Linux or macOS for production deployments.
+</Warning>
+
+## Running the server
+
+Start MinIO by passing one or more directory paths as storage locations:
+
+```sh
+minio server /data
+```
+
+Or with multiple drives for erasure coding:
+
+```sh
+minio server /data{1...12}
+```
+
+To pin the web console to a known port:
+
+```sh
+minio server /data --console-address :9001
+```
+
+### Root credentials
+
+By default MinIO starts with `minioadmin` / `minioadmin` as root credentials. Set these environment variables before starting the server to use custom credentials:
+
+```sh
+export MINIO_ROOT_USER=myaccesskey
+export MINIO_ROOT_PASSWORD=mysecretkey
+minio server /data --console-address :9001
+```
+
+### Server address
+
+Bind to a specific interface or port with `--address`:
+
+```sh
+minio server --address 0.0.0.0:9000 /data --console-address :9001
+```
+
+## Verify the installation
+
+Once the server is running, use the `mc` client to validate connectivity:
+
+```sh
+mc alias set local http://localhost:9000 minioadmin minioadmin
+mc admin info local
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Create your first bucket and upload objects.
+  </Card>
+  <Card title="Erasure coding" icon="shield" href="/architecture/erasure-coding">
+    Configure multi-drive erasure coding for data protection.
+  </Card>
+</CardGroup>

@@ -1,0 +1,181 @@
+---
+title: "AssumeRole"
+description: "Exchange MinIO IAM user credentials for short-lived temporary credentials using the STS AssumeRole action."
+---
+
+`AssumeRole` allows an authenticated MinIO IAM user to exchange their long-term credentials for short-lived temporary credentials. The returned credentials carry the same permissions as the originating user, optionally restricted further by a session policy.
+
+<Info>
+Only permanent IAM users authenticated with AWS Signature Version 4 may call this action. Temporary credentials (STS tokens) and service accounts cannot be used to call `AssumeRole`.
+</Info>
+
+## Request
+
+**`POST /`**
+
+```
+Content-Type: application/x-www-form-urlencoded
+Authorization: AWS4-HMAC-SHA256 ...
+```
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://minio.example.com/ \
+  --aws-sigv4 "aws:amz:us-east-1:sts" \
+  --user "ACCESS_KEY:SECRET_KEY" \
+  --data-urlencode "Action=AssumeRole" \
+  --data-urlencode "Version=2011-06-15" \
+  --data-urlencode "DurationSeconds=3600"
+```
+
+```go madmin SDK
+import (
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+creds := credentials.NewSTSAssumeRole(
+    "https://minio.example.com",
+    credentials.STSAssumeRoleOptions{
+        AccessKey:       "ACCESS_KEY",
+        SecretKey:       "SECRET_KEY",
+        DurationSeconds: 3600,
+    },
+)
+
+value, err := creds.Get()
+fmt.Println(value.AccessKeyID, value.SessionToken)
+```
+
+</CodeGroup>
+
+## Request parameters
+
+<ParamField body="Action" type="string" required>
+  Must be `AssumeRole`.
+</ParamField>
+
+<ParamField body="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField body="DurationSeconds" type="number">
+  Lifetime of the returned credentials in seconds. The default and maximum values are governed by MinIO server configuration. If omitted, the server default duration is used.
+</ParamField>
+
+<ParamField body="Policy" type="string">
+  An inline JSON session policy to further restrict permissions. This policy cannot exceed 2,048 characters and cannot grant permissions beyond what the IAM user already has.
+
+  Example:
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::my-bucket/*"]
+    }]
+  }
+  ```
+</ParamField>
+
+## Authentication
+
+The request must be signed with AWS Signature Version 4 using permanent IAM user credentials. The `Authorization` header format is:
+
+```
+AWS4-HMAC-SHA256 Credential=ACCESS_KEY/DATE/REGION/sts/aws4_request, ...
+```
+
+Session tokens (`X-Amz-Security-Token`) are **not** permitted in `AssumeRole` requests.
+
+## Response
+
+HTTP `200 OK` with an XML body.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <Credentials>
+      <AccessKeyId>TEMP_ACCESS_KEY</AccessKeyId>
+      <SecretAccessKey>TEMP_SECRET_KEY</SecretAccessKey>
+      <SessionToken>TEMP_SESSION_TOKEN</SessionToken>
+      <Expiration>2024-01-01T13:00:00Z</Expiration>
+    </Credentials>
+    <AssumedRoleUser>
+      <Arn>arn:minio:sts::ACCOUNTID:assumed-role/USERNAME/SESSION</Arn>
+      <AssumeRoleId>ROLE_ID:SESSION_NAME</AssumeRoleId>
+    </AssumedRoleUser>
+    <PackedPolicySize>0</PackedPolicySize>
+  </AssumeRoleResult>
+  <ResponseMetadata>
+    <RequestId>REQUEST_ID</RequestId>
+  </ResponseMetadata>
+</AssumeRoleResponse>
+```
+
+## Response fields
+
+<ResponseField name="Credentials" type="object" required>
+  The temporary security credentials.
+
+  <Expandable title="properties">
+    <ResponseField name="AccessKeyId" type="string">
+      Temporary access key. Use this as the access key for subsequent S3 API calls.
+    </ResponseField>
+    <ResponseField name="SecretAccessKey" type="string">
+      Temporary secret key.
+    </ResponseField>
+    <ResponseField name="SessionToken" type="string">
+      Session token. Must be provided as the `x-amz-security-token` header in every subsequent request.
+    </ResponseField>
+    <ResponseField name="Expiration" type="string">
+      ISO 8601 UTC timestamp when the credentials expire.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="AssumedRoleUser" type="object">
+  Identifiers for the temporary credentials.
+
+  <Expandable title="properties">
+    <ResponseField name="Arn" type="string">ARN of the assumed role.</ResponseField>
+    <ResponseField name="AssumeRoleId" type="string">Role ID and session name.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="PackedPolicySize" type="number">
+  Percentage of the session policy that is in use. The call fails if this exceeds 100.
+</ResponseField>
+
+## Using temporary credentials
+
+Pass the three credential values in every subsequent S3 API request:
+
+<CodeGroup>
+
+```bash curl
+curl "https://minio.example.com/my-bucket/file.txt" \
+  --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "TEMP_ACCESS_KEY:TEMP_SECRET_KEY" \
+  -H "x-amz-security-token: TEMP_SESSION_TOKEN"
+```
+
+```go Go SDK
+import "github.com/minio/minio-go/v7/pkg/credentials"
+
+stsClient := credentials.NewSTSAssumeRole(
+    "https://minio.example.com",
+    credentials.STSAssumeRoleOptions{
+        AccessKey: "ACCESS_KEY",
+        SecretKey: "SECRET_KEY",
+    },
+)
+minioClient, err := minio.New("minio.example.com", &minio.Options{
+    Creds: stsClient,
+})
+```
+
+</CodeGroup>

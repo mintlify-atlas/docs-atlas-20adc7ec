@@ -1,0 +1,285 @@
+---
+title: "Object Lambda"
+description: "MinIO Object Lambda transforms objects on-the-fly during GET requests using a webhook-based lambda function architecture."
+---
+
+Object Lambda enables application developers to process and transform data retrieved from MinIO before it is returned to the requesting application — without storing a separate transformed copy of the object.
+
+Common use cases include:
+- **PII redaction** — strip personally identifiable information for analytics pipelines
+- **Data enrichment** — augment objects with data from external databases
+- **Format conversion** — convert CSV to JSON, resize images, transcode media
+- **Content filtering** — apply content policies before delivering to specific clients
+
+## How It Works
+
+Object Lambda uses a webhook callback architecture:
+
+<Steps>
+  <Step title="Register a Lambda target">
+    Start MinIO with a named lambda target pointing to your HTTP handler endpoint.
+  </Step>
+  <Step title="Client makes a presigned GET request">
+    The client generates a presigned URL with a `lambdaArn` query parameter identifying the target.
+  </Step>
+  <Step title="MinIO calls your lambda function">
+    MinIO intercepts the GET request and POSTs a JSON event payload to your lambda handler. The payload includes a presigned URL for MinIO to fetch the original object.
+  </Step>
+  <Step title="Lambda transforms and returns the object">
+    Your handler fetches the original object using the presigned URL, applies the transformation, and returns the modified content to MinIO with the required response headers.
+  </Step>
+  <Step title="MinIO delivers the response to the client">
+    MinIO validates the response token and forwards the transformed content to the original requester.
+  </Step>
+</Steps>
+
+## Configuring a Lambda Target
+
+Set environment variables before starting `minio server`. The target name (`function` in the examples below) is a user-defined label — choose any alphanumeric name.
+
+### Basic Configuration
+
+```bash
+MINIO_LAMBDA_WEBHOOK_ENABLE_function=on \
+MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=http://localhost:5000 \
+minio server /data
+```
+
+On startup, MinIO logs the Object Lambda ARN:
+
+```
+Object Lambda ARNs: arn:minio:s3-object-lambda::function:webhook
+```
+
+### With Authorization Token
+
+If your handler requires a bearer token for authentication:
+
+```bash
+MINIO_LAMBDA_WEBHOOK_ENABLE_function=on \
+MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=http://localhost:5000 \
+MINIO_LAMBDA_WEBHOOK_AUTH_TOKEN="mytoken" \
+minio server /data
+```
+
+### With mTLS Client Authentication
+
+If your handler requires mutual TLS:
+
+```bash
+MINIO_LAMBDA_WEBHOOK_ENABLE_function=on \
+MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=https://localhost:5000 \
+MINIO_LAMBDA_WEBHOOK_CLIENT_CERT=client.crt \
+MINIO_LAMBDA_WEBHOOK_CLIENT_KEY=client.key \
+minio server /data
+```
+
+## Event Payload
+
+When a client invokes a lambda-backed GET, MinIO POSTs the following JSON structure to your handler:
+
+```json
+{
+  "getObjectContext": {
+    "inputS3Url": "https://...",
+    "outputRoute": "<routing-token>",
+    "outputToken": "<verification-token>"
+  },
+  "userRequest": {
+    "url": "/functionbucket/testobject?lambdaArn=...",
+    "headers": { ... }
+  },
+  "userIdentity": {
+    "type": "IAMUser",
+    "principalId": "<parent-user>",
+    "accessKeyId": "<access-key>"
+  }
+}
+```
+
+### Payload Fields
+
+| Field | Description |
+|:------|:------------|
+| `getObjectContext.inputS3Url` | Presigned URL to fetch the original object from MinIO. No credentials are needed beyond this URL. |
+| `getObjectContext.outputRoute` | Routing token — must be echoed back in the `x-amz-request-route` response header. |
+| `getObjectContext.outputToken` | Verification token — must be echoed back in the `x-amz-request-token` response header. |
+| `userRequest.url` | The original request URL made by the end user. |
+| `userIdentity` | Identity of the user who triggered the GET request. |
+
+## Handler Response Requirements
+
+Your lambda handler must return:
+1. The transformed object body as the HTTP response body.
+2. The `x-amz-request-route` header set to `outputRoute`.
+3. The `x-amz-request-token` header set to `outputToken`.
+
+MinIO validates both tokens. If either is missing or incorrect, the request is rejected with an error.
+
+## Example Lambda Handler
+
+<CodeGroup>
+```python Python (Flask)
+from flask import Flask, request, abort, make_response
+import requests
+
+app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+def get_webhook():
+    if request.method != 'POST':
+        abort(400)
+
+    event = request.json
+    object_context = event["getObjectContext"]
+
+    # Presigned URL to fetch the original object — no credentials needed
+    s3_url = object_context["inputS3Url"]
+
+    # Tokens to echo back in the response headers
+    request_route = object_context["outputRoute"]
+    request_token = object_context["outputToken"]
+
+    # Fetch the original object
+    r = requests.get(s3_url)
+    original_object = r.content.decode('utf-8')
+
+    # Apply transformation (uppercase in this example)
+    transformed_object = original_object.upper()
+
+    # Return the transformed content with required headers
+    resp = make_response(transformed_object, 200)
+    resp.headers['x-amz-request-route'] = request_route
+    resp.headers['x-amz-request-token'] = request_token
+    return resp
+
+if __name__ == '__main__':
+    app.run()
+```
+
+```go Go
+package main
+
+import (
+    "encoding/json"
+    "io"
+    "net/http"
+    "strings"
+)
+
+type GetObjectContext struct {
+    InputS3URL  string `json:"inputS3Url"`
+    OutputRoute string `json:"outputRoute"`
+    OutputToken string `json:"outputToken"`
+}
+
+type LambdaEvent struct {
+    GetObjectContext GetObjectContext `json:"getObjectContext"`
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    var evt LambdaEvent
+    if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Fetch the original object using the presigned URL
+    resp, err := http.Get(evt.GetObjectContext.InputS3URL)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    defer resp.Body.Close()
+
+    original, _ := io.ReadAll(resp.Body)
+
+    // Apply transformation (uppercase)
+    transformed := strings.ToUpper(string(original))
+
+    // Echo back the required routing headers
+    w.Header().Set("x-amz-request-route", evt.GetObjectContext.OutputRoute)
+    w.Header().Set("x-amz-request-token", evt.GetObjectContext.OutputToken)
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(transformed))
+}
+
+func main() {
+    http.HandleFunc("/", handler)
+    http.ListenAndServe(":5000", nil)
+}
+```
+</CodeGroup>
+
+## Invoking Object Lambda via Presigned URL
+
+Use the `minio-go` SDK to generate a presigned URL with the `lambdaArn` parameter:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/url"
+    "time"
+
+    "github.com/minio/minio-go/v7"
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+func main() {
+    s3Client, err := minio.New("localhost:9000", &minio.Options{
+        Creds:  credentials.NewStaticV4("minioadmin", "minioadmin", ""),
+        Secure: false,
+    })
+    if err != nil {
+        log.Fatalln(err)
+    }
+
+    // Reference the lambda function by its ARN
+    reqParams := make(url.Values)
+    reqParams.Set("lambdaArn", "arn:minio:s3-object-lambda::function:webhook")
+
+    presignedURL, err := s3Client.PresignedGetObject(
+        context.Background(),
+        "functionbucket",
+        "testobject",
+        time.Duration(1000)*time.Second,
+        reqParams,
+    )
+    if err != nil {
+        log.Fatalln(err)
+    }
+    fmt.Println(presignedURL)
+}
+```
+
+Then call the presigned URL:
+
+```bash
+curl -s $(go run presigned.go)
+# Returns the transformed object content
+```
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="PII Redaction">
+    Automatically strip or mask sensitive fields (SSN, email, phone) before delivering data to analytics consumers.
+  </Card>
+  <Card title="Image Resizing">
+    Resize or reformat images on-the-fly to serve responsive thumbnails without storing multiple copies.
+  </Card>
+  <Card title="Format Conversion">
+    Convert between data formats (CSV to JSON, Parquet to CSV) at read time based on the consumer's needs.
+  </Card>
+  <Card title="Data Enrichment">
+    Augment records with information from external databases or APIs before returning to the client.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Because transformations happen at read time, you store a single canonical copy of your data in MinIO and serve different views of it to different consumers — no ETL pipelines required.
+</Tip>
