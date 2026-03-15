@@ -1,0 +1,155 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "MinIO",
+  "projectDescription": "MinIO is a high-performance, S3-compatible object storage server designed for cloud-native and on-premises deployments.",
+  "theme": "aspen",
+  "primaryColor": "#c42c47",
+  "lightColor": "#e7053e",
+  "darkColor": "#e47a9c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "install/from-source",
+              "install/docker",
+              "install/kubernetes"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/erasure-coding",
+              "architecture/distributed-mode",
+              "architecture/storage-classes"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/environment-variables",
+              "configuration/tls",
+              "configuration/compression",
+              "configuration/throttling"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/iam",
+              "security/sts",
+              "security/kms",
+              "security/access-policies"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/buckets",
+              "operations/lifecycle",
+              "operations/replication",
+              "operations/site-replication",
+              "operations/decommissioning",
+              "operations/healing"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "monitoring/metrics",
+              "monitoring/prometheus",
+              "monitoring/healthcheck",
+              "monitoring/logging",
+              "monitoring/audit-logs"
+            ]
+          },
+          {
+            "group": "Protocols",
+            "pages": [
+              "protocols/s3-api",
+              "protocols/ftp-sftp",
+              "protocols/object-lambda"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/overview",
+              "integrations/kafka",
+              "integrations/elasticsearch",
+              "integrations/webhook"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "S3 API",
+            "pages": [
+              "api/s3/buckets",
+              "api/s3/objects",
+              "api/s3/multipart",
+              "api/s3/presigned"
+            ]
+          },
+          {
+            "group": "Admin API",
+            "pages": [
+              "api/admin/overview",
+              "api/admin/users",
+              "api/admin/groups",
+              "api/admin/policies",
+              "api/admin/server-info",
+              "api/admin/heal"
+            ]
+          },
+          {
+            "group": "STS API",
+            "pages": [
+              "api/sts/overview",
+              "api/sts/assume-role",
+              "api/sts/web-identity"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "S3-compatible API with full AWS S3 compatibility",
+    "Erasure coding with Reed-Solomon algorithm for data protection",
+    "Distributed multi-node, multi-drive deployments",
+    "BitRot protection via HighwayHash checksums",
+    "Server-side encryption with KMS integration",
+    "IAM with LDAP, OpenID Connect, and built-in identity management",
+    "Bucket replication and site-level replication",
+    "Object lifecycle management and tiering",
+    "Prometheus metrics and Grafana integration",
+    "FTP/SFTP protocol support",
+    "Kubernetes and Helm chart deployment",
+    "Batch job processing for replication, expiration, and key rotation"
+  ],
+  "publicApiSurface": [
+    "S3 API: PutObject, GetObject, DeleteObject, ListObjects, CreateBucket, DeleteBucket",
+    "S3 API: Multipart upload (CreateMultipartUpload, UploadPart, CompleteMultipartUpload)",
+    "S3 API: Presigned URLs (PutObject, GetObject)",
+    "S3 API: Bucket versioning, lifecycle, replication, encryption, notification",
+    "Admin API: /minio/health/live, /minio/health/ready, /minio/health/cluster",
+    "Admin API: /minio/admin/v3/info, /minio/admin/v3/heal",
+    "Admin API: /minio/admin/v3/add-user, /minio/admin/v3/list-users",
+    "Admin API: /minio/admin/v3/add-canned-policy, /minio/admin/v3/set-user-or-group-policy",
+    "STS API: AssumeRole, AssumeRoleWithWebIdentity, AssumeRoleWithLDAPIdentity",
+    "Metrics: /minio/v2/metrics/cluster, /minio/v2/metrics/node",
+    "Object Lambda: custom transformation via webhook handlers"
+  ]
+}
